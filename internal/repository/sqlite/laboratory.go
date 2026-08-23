@@ -28,10 +28,6 @@ func InsertLabResult(ctx context.Context, db DBTX, result domain.LabResult) erro
 	return nil
 }
 
-func (s *Store) CommitLabResult(ctx context.Context, result domain.LabResult) error {
-	return s.WithTx(ctx, nil, func(tx *sql.Tx) error { return InsertLabResult(ctx, tx, result) })
-}
-
 func scanLabResult(scanner interface{ Scan(...any) error }) (domain.LabResult, error) {
 	var result domain.LabResult
 	var status, measured, created, updated string

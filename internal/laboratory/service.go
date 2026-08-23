@@ -50,23 +50,26 @@ func (s *Service) RecordResult(ctx context.Context, actor domain.Actor, command 
 	if err := result.Validate(); err != nil {
 		return domain.LabResult{}, err
 	}
-	sample, err := s.store.Sample(ctx, s.store.DB(), actor.OrganizationID, command.SampleID)
-	if err == nil && sample.Status != domain.SampleReceived {
-		err = &domain.TransitionError{Entity: "sample", From: string(sample.Status), To: string(domain.SampleTested), Reason: "sample must be received before analysis"}
-	}
-	if err == nil && sample.CustodianUserID != actor.UserID && !actor.CanSupervise() {
-		err = domain.ErrForbidden
-	}
-	if err == nil {
-		err = s.store.CommitLabResult(ctx, result)
-	}
-	if err == nil {
-		err = audit.Insert(ctx, s.store.DB(), domain.AuditEvent{
+	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+		sample, err := s.store.Sample(ctx, tx, actor.OrganizationID, command.SampleID)
+		if err != nil {
+			return err
+		}
+		if sample.Status != domain.SampleReceived {
+			return &domain.TransitionError{Entity: "sample", From: string(sample.Status), To: string(domain.SampleTested), Reason: "sample must be received before analysis"}
+		}
+		if sample.CustodianUserID != actor.UserID && !actor.CanSupervise() {
+			return domain.ErrForbidden
+		}
+		if err := repository.InsertLabResult(ctx, tx, result); err != nil {
+			return err
+		}
+		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: command.RequestID, Action: "lab_result.record", ObjectType: "lab_result", ObjectID: result.ID,
 			Outcome: "success", Metadata: fmt.Sprintf(`{"sample_id":%q,"parameter":%q}`, result.SampleID, result.Parameter), OccurredAt: now,
 		})
-	}
+	})
 	if err != nil {
 		return domain.LabResult{}, fmt.Errorf("record laboratory result: %w", err)
 	}

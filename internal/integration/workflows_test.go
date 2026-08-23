@@ -366,6 +366,109 @@ func TestLaboratorySelfReviewRollsBackAllState(t *testing.T) {
 	}
 }
 
+func TestLaboratoryRecordResultCommitsResultAndAuditTogether(t *testing.T) {
+	f := newFixture(t)
+	graph := f.createSourceGraph(t)
+	sample := f.createReceivedSample(t, graph)
+	now := time.Now().UTC()
+	result, err := f.lab.RecordResult(context.Background(), f.analyst, laboratory.RecordResultCommand{SampleID: sample.ID, Parameter: "ammonia", Value: 0.4, Unit: "mg/L", MethodCode: "HJ-535", DetectionLimit: .01, RegulatoryLimit: 1, MeasuredAt: now, RequestID: "lab-record-atomic"})
+	if err != nil {
+		t.Fatalf("record result error = %v", err)
+	}
+	var stored string
+	if err := f.store.DB().QueryRow(`SELECT status FROM lab_results WHERE id = ?`, result.ID).Scan(&stored); err != nil {
+		t.Fatalf("select result: %v", err)
+	}
+	if stored != string(domain.LabResultDraft) {
+		t.Fatalf("result status = %s, want draft", stored)
+	}
+	var auditCount int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE object_type = 'lab_result' AND object_id = ? AND outcome = 'success'`, result.ID).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 1 {
+		t.Fatalf("audit events = %d, want 1", auditCount)
+	}
+}
+
+func TestLaboratoryRecordResultLeavesNoDraftOnFailure(t *testing.T) {
+	f := newFixture(t)
+	graph := f.createSourceGraph(t)
+	sample := f.createReceivedSample(t, graph)
+	now := time.Now().UTC()
+
+	// A duplicate (sample, parameter, method_code) violates the UNIQUE constraint
+	// inside the record transaction, so the whole transaction must roll back.
+	first, err := f.lab.RecordResult(context.Background(), f.analyst, laboratory.RecordResultCommand{SampleID: sample.ID, Parameter: "mercury", Value: .0008, Unit: "mg/L", MethodCode: "HJ-694", DetectionLimit: .0001, RegulatoryLimit: .001, MeasuredAt: now, RequestID: "lab-record-dup-1"})
+	if err != nil {
+		t.Fatalf("first record error = %v", err)
+	}
+	_, err = f.lab.RecordResult(context.Background(), f.analyst, laboratory.RecordResultCommand{SampleID: sample.ID, Parameter: "mercury", Value: .0009, Unit: "mg/L", MethodCode: "HJ-694", DetectionLimit: .0001, RegulatoryLimit: .001, MeasuredAt: now, RequestID: "lab-record-dup-2"})
+	if err == nil {
+		t.Fatal("duplicate record unexpectedly succeeded")
+	}
+	var resultCount, auditCount int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM lab_results WHERE sample_id = ? AND parameter = 'mercury' AND method_code = 'HJ-694'`, sample.ID).Scan(&resultCount); err != nil {
+		t.Fatal(err)
+	}
+	if resultCount != 1 {
+		t.Fatalf("results after failed record = %d, want 1 (only the first)", resultCount)
+	}
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE request_id = 'lab-record-dup-2'`).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 0 {
+		t.Fatalf("audit events for failed record = %d, want 0", auditCount)
+	}
+
+	// After the failed attempt the first result is intact and the sample can be re-recorded.
+	if _, err := f.lab.RecordResult(context.Background(), f.analyst, laboratory.RecordResultCommand{SampleID: sample.ID, Parameter: "cadmium", Value: .002, Unit: "mg/L", MethodCode: "HJ-91", DetectionLimit: .0002, RegulatoryLimit: .005, MeasuredAt: now, RequestID: "lab-record-redo"}); err != nil {
+		t.Fatalf("re-record after failure error = %v", err)
+	}
+	_ = first
+}
+
+func TestLaboratoryRecordResultRejectsNonOwnerWithoutLeavingDraft(t *testing.T) {
+	f := newFixture(t)
+	graph := f.createSourceGraph(t)
+	sample := f.createReceivedSample(t, graph)
+	now := time.Now().UTC()
+
+	// Another analyst in the same org who is neither custodian nor supervisor.
+	otherHash, err := auth.HashPassword("correct-horse-battery-staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherUser := domain.User{ID: "other-analyst", OrganizationID: "org-1", Email: "other-analyst@example.test", PasswordHash: otherHash, Role: domain.RoleLabAnalyst, Active: true, AuthGeneration: 1, CreatedAt: now, UpdatedAt: now}
+	if err := f.store.CreateUser(context.Background(), otherUser); err != nil {
+		t.Fatalf("create other analyst: %v", err)
+	}
+	otherAnalyst := domain.Actor{UserID: "other-analyst", OrganizationID: "org-1", Role: domain.RoleLabAnalyst, AuthGeneration: 1}
+
+	_, err = f.lab.RecordResult(context.Background(), otherAnalyst, laboratory.RecordResultCommand{SampleID: sample.ID, Parameter: "lead", Value: .006, Unit: "mg/L", MethodCode: "HJ-91", DetectionLimit: .0005, RegulatoryLimit: .01, MeasuredAt: now, RequestID: "lab-record-forbidden"})
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("non-owner record error = %v, want ErrForbidden", err)
+	}
+	var results, audits int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM lab_results WHERE sample_id = ? AND parameter = 'lead'`, sample.ID).Scan(&results); err != nil {
+		t.Fatal(err)
+	}
+	if results != 0 {
+		t.Fatalf("forbidden record left %d results", results)
+	}
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE request_id = 'lab-record-forbidden'`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if audits != 0 {
+		t.Fatalf("forbidden record left %d audit events", audits)
+	}
+
+	// The actual custodian can still record on the same sample.
+	if _, err := f.lab.RecordResult(context.Background(), f.analyst, laboratory.RecordResultCommand{SampleID: sample.ID, Parameter: "lead", Value: .004, Unit: "mg/L", MethodCode: "HJ-91", DetectionLimit: .0005, RegulatoryLimit: .01, MeasuredAt: now, RequestID: "lab-record-owner"}); err != nil {
+		t.Fatalf("owner re-record error = %v", err)
+	}
+}
+
 func TestPermitActivationAndShipmentReleaseIdempotency(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)
