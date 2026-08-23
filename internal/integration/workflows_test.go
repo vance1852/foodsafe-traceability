@@ -400,6 +400,97 @@ func TestPermitActivationAndShipmentReleaseIdempotency(t *testing.T) {
 	}
 }
 
+func TestPermitSuspensionIsAtomicWithAuditAndOutbox(t *testing.T) {
+	f := newFixture(t)
+	graph := f.createSourceGraph(t)
+	now := time.Now().UTC()
+	ctx := context.Background()
+	created, err := f.permits.Create(ctx, f.supervisor, permit.CreateCommand{FacilityID: graph.source.ID, HolderName: "Cold Storage Depot", Reference: "SUSPEND-2026-1", ValidFrom: now.Add(-time.Hour), ValidUntil: now.Add(24 * time.Hour), DailyVolumeLimitLiters: 1000, RequestID: "permit-suspend-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.permits.Activate(ctx, f.supervisor, created.ID, "permit-suspend-activate"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate audit store rejection: drop the audit table so the audit write
+	// fails mid-suspension. Permit status and the queued notification must roll
+	// back so neither takes effect without an audit record.
+	if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE audit_events`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.permits.Suspend(ctx, f.supervisor, created.ID, "temperature control violation", "permit-suspend-fail"); err == nil {
+		t.Fatal("suspension unexpectedly succeeded without audit table")
+	}
+
+	var status string
+	if err := f.store.DB().QueryRow(`SELECT status FROM permits WHERE id = ?`, created.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "active" {
+		t.Fatalf("suspension without audit changed permit status to %q", status)
+	}
+	var outboxCount int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = ?`, created.ID).Scan(&outboxCount); err != nil {
+		t.Fatal(err)
+	}
+	if outboxCount != 0 {
+		t.Fatalf("failed suspension queued %d outbox events", outboxCount)
+	}
+
+	// Restore audit storage and retry: the suspension, notification queue and
+	// audit record must all land in a single transactional pass.
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE TABLE audit_events (
+		id TEXT PRIMARY KEY,
+		organization_id TEXT NOT NULL REFERENCES organizations(id),
+		actor_user_id TEXT NOT NULL,
+		request_id TEXT NOT NULL,
+		action TEXT NOT NULL,
+		object_type TEXT NOT NULL,
+		object_id TEXT NOT NULL,
+		outcome TEXT NOT NULL,
+		metadata TEXT NOT NULL DEFAULT '{}',
+		occurred_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_audit_object_time ON audit_events(organization_id, object_type, object_id, occurred_at)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_audit_request ON audit_events(request_id)`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.permits.Suspend(ctx, f.supervisor, created.ID, "temperature control violation", "permit-suspend-retry"); err != nil {
+		t.Fatalf("retry suspension: %v", err)
+	}
+
+	if err := f.store.DB().QueryRow(`SELECT status FROM permits WHERE id = ?`, created.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "suspended" {
+		t.Fatalf("permit status after retry = %q", status)
+	}
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = ? AND status = 'pending'`, created.ID).Scan(&outboxCount); err != nil {
+		t.Fatal(err)
+	}
+	if outboxCount != 1 {
+		t.Fatalf("outbox pending count after retry = %d", outboxCount)
+	}
+	var auditCount int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE object_id = ? AND action = 'permit.suspend'`, created.ID).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 1 {
+		t.Fatalf("audit count after retry = %d", auditCount)
+	}
+
+	// A duplicate suspension must be rejected because the permit is already suspended.
+	if err := f.permits.Suspend(ctx, f.supervisor, created.ID, "second violation", "permit-suspend-duplicate"); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("duplicate suspension error = %v", err)
+	}
+}
+
 func TestPermitActivationBlockedByOpenExceedance(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)

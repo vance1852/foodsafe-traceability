@@ -92,32 +92,47 @@ func (s *Store) TransitionPermit(ctx context.Context, tx *sql.Tx, permit domain.
 	return nil
 }
 
+// SuspendPermit transitions a permit into the suspended state and enqueues the
+// permit.suspended outbox event inside its own transaction. Deprecated for the
+// permit service: prefer SuspendPermitTx, which leaves the transaction open so
+// the caller can append audit (and other) writes atomically.
 func (s *Store) SuspendPermit(ctx context.Context, organizationID, permitID, reason string, now time.Time) (domain.Permit, error) {
 	var permit domain.Permit
 	err := s.WithTx(ctx, nil, func(tx *sql.Tx) error {
 		var err error
-		permit, err = s.Permit(ctx, tx, organizationID, permitID)
-		if err != nil {
-			return err
-		}
-		if err := permit.CanTransition(domain.PermitSuspended, now); err != nil {
-			return err
-		}
-		if err := s.TransitionPermit(ctx, tx, permit, domain.PermitSuspended, now); err != nil {
-			return err
-		}
-		payload, err := json.Marshal(map[string]any{"permit_id": permit.ID, "reason": reason})
-		if err != nil {
-			return fmt.Errorf("encode permit suspension event: %w", err)
-		}
-		return InsertOutboxEvent(ctx, tx, domain.OutboxEvent{
-			ID: uuid.NewString(), OrganizationID: organizationID, Topic: "permit.suspended",
-			AggregateType: "permit", AggregateID: permit.ID, IdempotencyKey: "suspend:" + permit.ID + ":" + fmt.Sprint(permit.Version),
-			Payload: payload, Status: domain.OutboxPending, MaxAttempts: 5, AvailableAt: now, CreatedAt: now, UpdatedAt: now,
-		})
+		permit, err = s.SuspendPermitTx(ctx, tx, organizationID, permitID, reason, now)
+		return err
 	})
 	if err != nil {
 		return domain.Permit{}, fmt.Errorf("persist permit suspension: %w", err)
+	}
+	return permit, nil
+}
+
+// SuspendPermitTx performs the permit transition and outbox enqueue for a
+// suspension on the caller's transaction without committing, so the caller can
+// add audit records (and any other dependent writes) and commit them together.
+func (s *Store) SuspendPermitTx(ctx context.Context, tx *sql.Tx, organizationID, permitID, reason string, now time.Time) (domain.Permit, error) {
+	permit, err := s.Permit(ctx, tx, organizationID, permitID)
+	if err != nil {
+		return domain.Permit{}, err
+	}
+	if err := permit.CanTransition(domain.PermitSuspended, now); err != nil {
+		return domain.Permit{}, err
+	}
+	if err := s.TransitionPermit(ctx, tx, permit, domain.PermitSuspended, now); err != nil {
+		return domain.Permit{}, err
+	}
+	payload, err := json.Marshal(map[string]any{"permit_id": permit.ID, "reason": reason})
+	if err != nil {
+		return domain.Permit{}, fmt.Errorf("encode permit suspension event: %w", err)
+	}
+	if err := InsertOutboxEvent(ctx, tx, domain.OutboxEvent{
+		ID: uuid.NewString(), OrganizationID: organizationID, Topic: "permit.suspended",
+		AggregateType: "permit", AggregateID: permit.ID, IdempotencyKey: "suspend:" + permit.ID + ":" + fmt.Sprint(permit.Version),
+		Payload: payload, Status: domain.OutboxPending, MaxAttempts: 5, AvailableAt: now, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		return domain.Permit{}, err
 	}
 	return permit, nil
 }

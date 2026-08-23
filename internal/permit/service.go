@@ -122,14 +122,17 @@ func (s *Service) Suspend(ctx context.Context, actor domain.Actor, permitID, rea
 		return domain.NewValidationError("suspend permit", domain.FieldViolation{Field: "reason", Rule: "must contain at least 5 characters"})
 	}
 	now := s.clock().UTC()
-	permit, err := s.store.SuspendPermit(ctx, actor.OrganizationID, permitID, reason, now)
-	if err == nil {
-		err = audit.Insert(ctx, s.store.DB(), domain.AuditEvent{
+	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+		permit, err := s.store.SuspendPermitTx(ctx, tx, actor.OrganizationID, permitID, reason, now)
+		if err != nil {
+			return err
+		}
+		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: requestID, Action: "permit.suspend", ObjectType: "permit", ObjectID: permit.ID,
 			Outcome: "success", Metadata: fmt.Sprintf(`{"reason":%q}`, reason), OccurredAt: now,
 		})
-	}
+	})
 	if err != nil {
 		return fmt.Errorf("suspend permit: %w", err)
 	}
