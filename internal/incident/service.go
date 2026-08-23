@@ -157,27 +157,30 @@ func (s *Service) AssignContainment(ctx context.Context, actor domain.Actor, com
 	if assignment.ResourceCode == "" || assignment.AssigneeUserID == "" {
 		return domain.ContainmentAssignment{}, domain.NewValidationError("assign containment", domain.FieldViolation{Field: "assignment", Rule: "resource_code and assignee_user_id are required"})
 	}
-	incident, err := s.store.Incident(ctx, s.store.DB(), actor.OrganizationID, command.IncidentID)
-	if err == nil && (incident.CommanderUserID != actor.UserID || incident.LeaseToken != command.LeaseToken || incident.LeaseExpiresAt == nil || !incident.LeaseExpiresAt.After(now)) {
-		err = &domain.LeaseError{Resource: "incident " + incident.ID, Owner: actor.UserID, Generation: incident.LeaseGeneration}
-	}
-	assignee, assigneeErr := s.store.UserByID(ctx, s.store.DB(), actor.OrganizationID, command.AssigneeUserID)
-	if err == nil {
-		err = assigneeErr
-	}
-	if err == nil && !assignee.Active {
-		err = &domain.ConflictError{Resource: "containment assignee", Key: assignee.ID, Cause: errors.New("assignee is inactive")}
-	}
-	if err == nil {
-		err = s.store.CommitContainmentAssignment(ctx, assignment)
-	}
-	if err == nil {
-		err = audit.Insert(ctx, s.store.DB(), domain.AuditEvent{
+	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+		incident, err := s.store.Incident(ctx, tx, actor.OrganizationID, command.IncidentID)
+		if err != nil {
+			return err
+		}
+		if incident.CommanderUserID != actor.UserID || incident.LeaseToken != command.LeaseToken || incident.LeaseExpiresAt == nil || !incident.LeaseExpiresAt.After(now) {
+			return &domain.LeaseError{Resource: "incident " + incident.ID, Owner: actor.UserID, Generation: incident.LeaseGeneration}
+		}
+		assignee, err := s.store.UserByID(ctx, tx, actor.OrganizationID, command.AssigneeUserID)
+		if err != nil {
+			return err
+		}
+		if !assignee.Active {
+			return &domain.ConflictError{Resource: "containment assignee", Key: assignee.ID, Cause: errors.New("assignee is inactive")}
+		}
+		if err := repository.InsertContainmentAssignment(ctx, tx, assignment); err != nil {
+			return err
+		}
+		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: command.RequestID, Action: "containment.assign", ObjectType: "containment_assignment", ObjectID: assignment.ID,
 			Outcome: "success", Metadata: fmt.Sprintf(`{"incident_id":%q,"resource_code":%q}`, incident.ID, assignment.ResourceCode), OccurredAt: now,
 		})
-	}
+	})
 	if err != nil {
 		return domain.ContainmentAssignment{}, fmt.Errorf("assign containment: %w", err)
 	}

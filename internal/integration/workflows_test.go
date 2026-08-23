@@ -477,6 +477,103 @@ func TestIncidentCannotResolveWithIncompleteContainment(t *testing.T) {
 	}
 }
 
+func TestContainmentAssignmentAuditFailureLeavesNoAssignment(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	graph := f.createSourceGraph(t)
+	reported, err := f.incidents.Report(ctx, f.field, incident.ReportCommand{FacilityID: graph.source.ID, Title: "Solvent plume under tank farm", Description: "A solvent plume was detected beneath the tank farm", Severity: domain.SeverityCritical, RequestID: "incident-plume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := f.incidents.Claim(ctx, f.supervisor, reported.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Force the audit insert to fail while leaving the containment table intact,
+	// so a non-atomic implementation would commit the assignment but lose the audit row.
+	if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE audit_events`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.incidents.AssignContainment(ctx, f.supervisor, incident.AssignCommand{IncidentID: reported.ID, LeaseToken: claimed.LeaseToken, ResourceCode: "BARRIER-AUDIT-FAIL", AssigneeUserID: f.field.UserID, RequestID: "assign-audit-fail"})
+	if err == nil {
+		t.Fatal("assignment unexpectedly succeeded without audit table")
+	}
+
+	// The audit failure must not leave a pending isolation task behind.
+	var leaked int
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM containment_assignments WHERE resource_code = 'BARRIER-AUDIT-FAIL'`).Scan(&leaked); err != nil {
+		t.Fatal(err)
+	}
+	if leaked != 0 {
+		t.Fatalf("audit failure leaked %d containment assignments", leaked)
+	}
+}
+
+func TestContainmentAssignmentRetrySucceedsAfterAuditFailure(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	graph := f.createSourceGraph(t)
+	reported, err := f.incidents.Report(ctx, f.field, incident.ReportCommand{FacilityID: graph.source.ID, Title: "Coolant leak into storm drain", Description: "Coolant was observed entering the storm drain network", Severity: domain.SeveritySignificant, RequestID: "incident-coolant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := f.incidents.Claim(ctx, f.supervisor, reported.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First attempt fails at audit time but must roll back the assignment so the
+	// resource can be re-used after audit storage is restored.
+	if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE audit_events`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.incidents.AssignContainment(ctx, f.supervisor, incident.AssignCommand{IncidentID: reported.ID, LeaseToken: claimed.LeaseToken, ResourceCode: "BARRIER-RETRY", AssigneeUserID: f.field.UserID, RequestID: "assign-retry-fail"})
+	if err == nil {
+		t.Fatal("assignment unexpectedly succeeded without audit table")
+	}
+
+	// Restore audit storage and confirm the commander can retry the same resource
+	// under the existing incident lease, with the assignee still validated.
+	// (Migration 001 is already recorded, so re-create the audit table directly.)
+	if _, err := f.store.DB().ExecContext(ctx, `
+CREATE TABLE audit_events (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations(id),
+    actor_user_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    occurred_at TEXT NOT NULL
+)`); err != nil {
+		t.Fatalf("restore audit table: %v", err)
+	}
+	assignment, err := f.incidents.AssignContainment(ctx, f.supervisor, incident.AssignCommand{IncidentID: reported.ID, LeaseToken: claimed.LeaseToken, ResourceCode: "BARRIER-RETRY", AssigneeUserID: f.field.UserID, RequestID: "assign-retry-ok"})
+	if err != nil {
+		t.Fatalf("retry assignment: %v", err)
+	}
+	if assignment.Status != domain.AssignmentPending {
+		t.Fatalf("assignment status = %s", assignment.Status)
+	}
+
+	// The lease and assignee checks remain enforced: a stale lease is rejected.
+	_, err = f.incidents.AssignContainment(ctx, f.supervisor, incident.AssignCommand{IncidentID: reported.ID, LeaseToken: "stale", ResourceCode: "BARRIER-RETRY-2", AssigneeUserID: f.field.UserID, RequestID: "assign-retry-stale"})
+	if !errors.Is(err, domain.ErrLeaseLost) {
+		t.Fatalf("stale lease error = %v", err)
+	}
+	// An inactive assignee is rejected even under a valid lease.
+	if _, err := f.store.DB().ExecContext(ctx, `UPDATE users SET active = 0 WHERE id = ?`, f.analyst.UserID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.incidents.AssignContainment(ctx, f.supervisor, incident.AssignCommand{IncidentID: reported.ID, LeaseToken: claimed.LeaseToken, ResourceCode: "BARRIER-RETRY-3", AssigneeUserID: f.analyst.UserID, RequestID: "assign-retry-inactive"})
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("inactive assignee error = %v", err)
+	}
+}
+
 func TestRemediationPlanApprovalAndActionCompletion(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)

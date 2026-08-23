@@ -186,10 +186,6 @@ func InsertContainmentAssignment(ctx context.Context, db DBTX, assignment domain
 	return nil
 }
 
-func (s *Store) CommitContainmentAssignment(ctx context.Context, assignment domain.ContainmentAssignment) error {
-	return s.WithTx(ctx, nil, func(tx *sql.Tx) error { return InsertContainmentAssignment(ctx, tx, assignment) })
-}
-
 func (s *Store) CountIncompleteAssignments(ctx context.Context, db DBTX, organizationID, incidentID string) (int, error) {
 	var count int
 	err := db.QueryRowContext(ctx, `
