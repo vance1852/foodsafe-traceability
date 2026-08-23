@@ -3,24 +3,12 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/vance1852/foodsafe-traceability/internal/domain"
 )
-
-func (s *Store) CommitIncidentPublication(ctx context.Context, incident domain.Incident, now time.Time) error {
-	return s.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		if err := InsertIncident(ctx, tx, incident); err != nil {
-			return err
-		}
-		payload, _ := json.Marshal(map[string]any{"incident_id": incident.ID, "severity": incident.Severity})
-		return InsertOutboxEvent(ctx, tx, domain.OutboxEvent{ID: uuid.NewString(), OrganizationID: incident.OrganizationID, Topic: "incident.reported", AggregateType: "incident", AggregateID: incident.ID, IdempotencyKey: "manual-report:" + incident.ID, Payload: payload, Status: domain.OutboxPending, MaxAttempts: 5, AvailableAt: now, CreatedAt: now, UpdatedAt: now})
-	})
-}
 
 func InsertIncident(ctx context.Context, db DBTX, incident domain.Incident) error {
 	_, err := db.ExecContext(ctx, `

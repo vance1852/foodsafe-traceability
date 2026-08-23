@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -56,17 +57,28 @@ func (s *Service) Report(ctx context.Context, actor domain.Actor, command Report
 	if err := incident.Validate(); err != nil {
 		return domain.Incident{}, err
 	}
-	_, err := s.store.FoodFacility(ctx, s.store.DB(), actor.OrganizationID, command.FacilityID)
-	if err == nil {
-		err = s.store.CommitIncidentPublication(ctx, incident, now)
-	}
-	if err == nil {
-		err = audit.Insert(ctx, s.store.DB(), domain.AuditEvent{
+	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+		if _, err := s.store.FoodFacility(ctx, tx, actor.OrganizationID, command.FacilityID); err != nil {
+			return err
+		}
+		if err := repository.InsertIncident(ctx, tx, incident); err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(map[string]any{"incident_id": incident.ID, "severity": incident.Severity})
+		if err := repository.InsertOutboxEvent(ctx, tx, domain.OutboxEvent{
+			ID: uuid.NewString(), OrganizationID: incident.OrganizationID, Topic: "incident.reported",
+			AggregateType: "incident", AggregateID: incident.ID, IdempotencyKey: "manual-report:" + incident.ID,
+			Payload: payload, Status: domain.OutboxPending, MaxAttempts: 5,
+			AvailableAt: now, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
+		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: command.RequestID, Action: "incident.report", ObjectType: "incident", ObjectID: incident.ID,
 			Outcome: "success", Metadata: fmt.Sprintf(`{"severity":%q}`, incident.Severity), OccurredAt: now,
 		})
-	}
+	})
 	if err != nil {
 		return domain.Incident{}, fmt.Errorf("report incident: %w", err)
 	}

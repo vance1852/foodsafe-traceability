@@ -626,6 +626,59 @@ func TestAuditFailureRollsBackSourceRegistration(t *testing.T) {
 	}
 }
 
+func TestAuditFailureRollsBackIncidentReportAndNotification(t *testing.T) {
+	f := newFixture(t)
+	graph := f.createSourceGraph(t)
+	ctx := context.Background()
+	if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE audit_events`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.incidents.Report(ctx, f.field, incident.ReportCommand{FacilityID: graph.source.ID, Title: "Contamination at packaging line", Description: "Foreign matter was detected on the packaging line", Severity: domain.SeverityCritical, RequestID: "incident-rollback"}); err == nil {
+		t.Fatal("report unexpectedly succeeded without audit table")
+	}
+	var incidents, outbox int
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM incidents WHERE facility_id = ?`, graph.source.ID).Scan(&incidents); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_events WHERE topic = 'incident.reported'`).Scan(&outbox); err != nil {
+		t.Fatal(err)
+	}
+	if incidents != 0 || outbox != 0 {
+		t.Fatalf("audit failure leaked incidents=%d outbox=%d", incidents, outbox)
+	}
+}
+
+func TestIncidentReportRecoveryCreatesSingleCompleteIncident(t *testing.T) {
+	f := newFixture(t)
+	graph := f.createSourceGraph(t)
+	ctx := context.Background()
+	command := incident.ReportCommand{FacilityID: graph.source.ID, Title: "Foreign matter on packaging line", Description: "A contaminant was reported on the packaging line during production", Severity: domain.SeveritySignificant, RequestID: "incident-recovery"}
+	first, err := f.incidents.Report(ctx, f.field, command)
+	if err != nil {
+		t.Fatalf("first report: %v", err)
+	}
+	second, err := f.incidents.Report(ctx, f.field, command)
+	if err != nil {
+		t.Fatalf("second report: %v", err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("recovery returned the same incident id %q twice", first.ID)
+	}
+	var incidents, outbox, audits int
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM incidents WHERE facility_id = ?`, graph.source.ID).Scan(&incidents); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_events WHERE topic = 'incident.reported' AND aggregate_id IN (SELECT id FROM incidents WHERE facility_id = ?)`, graph.source.ID).Scan(&outbox); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events WHERE request_id = 'incident-recovery'`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if incidents != 2 || outbox != 2 || audits != 2 {
+		t.Fatalf("recovery counts incidents=%d outbox=%d audits=%d", incidents, outbox, audits)
+	}
+}
+
 func TestContextCancellationPreventsTransactionCommit(t *testing.T) {
 	f := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
