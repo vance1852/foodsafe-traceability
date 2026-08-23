@@ -239,8 +239,6 @@ func (s *Store) TransitionSample(ctx context.Context, tx *sql.Tx, sample domain.
 	return nil
 }
 
-func (s *Store) CollectAuditDB() *sql.DB { return s.db }
-
 func InsertCustodyEvent(ctx context.Context, db DBTX, event domain.CustodyEvent) error {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO custody_events(

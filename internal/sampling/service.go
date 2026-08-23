@@ -139,7 +139,6 @@ func (s *Service) Collect(ctx context.Context, actor domain.Actor, command Colle
 		collectedAt = now
 	}
 	var sample domain.Sample
-	var collectAudit domain.AuditEvent
 	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
 		plan, err := s.store.SamplingPlan(ctx, tx, actor.OrganizationID, command.PlanID)
 		if err != nil {
@@ -202,17 +201,15 @@ func (s *Service) Collect(ctx context.Context, actor domain.Actor, command Colle
 		if err := s.store.TransitionSamplingPlan(ctx, tx, plan, domain.PlanCompleted, now); err != nil {
 			return err
 		}
-		collectAudit = domain.AuditEvent{
+		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: command.RequestID, Action: "sample.collect", ObjectType: "sample", ObjectID: sample.ID,
 			Outcome: "success", Metadata: fmt.Sprintf(`{"label":%q,"plan_id":%q}`, sample.Label, sample.PlanID), OccurredAt: now,
-		}
-		return nil
+		})
 	})
 	if err != nil {
 		return domain.Sample{}, fmt.Errorf("collect sample: %w", err)
 	}
-	if err := audit.Insert(ctx, s.store.CollectAuditDB(), collectAudit); err != nil { return domain.Sample{}, fmt.Errorf("collect sample audit: %w", err) }
 	return sample, nil
 }
 
