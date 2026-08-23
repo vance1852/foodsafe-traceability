@@ -626,6 +626,29 @@ func TestAuditFailureRollsBackSourceRegistration(t *testing.T) {
 	}
 }
 
+func TestAuditFailureRollsBackStationRegistration(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	graph := f.createSourceGraph(t)
+	if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE audit_events`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.sources.RegisterStation(ctx, f.supervisor, source.RegisterStationCommand{
+		FacilityID: graph.source.ID, ZoneID: graph.zone.ID, Code: "ROLLBACK-1", Name: "Rollback inlet",
+		Latitude: 31.2, Longitude: 121.4, RequestID: "station-rollback",
+	})
+	if err == nil {
+		t.Fatal("station registration unexpectedly succeeded without audit table")
+	}
+	var count int
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM inspection_stations WHERE code = 'ROLLBACK-1'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("audit failure leaked %d stations", count)
+	}
+}
+
 func TestContextCancellationPreventsTransactionCommit(t *testing.T) {
 	f := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())

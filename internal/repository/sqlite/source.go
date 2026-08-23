@@ -198,10 +198,6 @@ func InsertInspectionStation(ctx context.Context, db DBTX, station domain.Inspec
 	return nil
 }
 
-func (s *Store) CommitInspectionStation(ctx context.Context, station domain.InspectionStation) error {
-	return s.WithTx(ctx, nil, func(tx *sql.Tx) error { return InsertInspectionStation(ctx, tx, station) })
-}
-
 func (s *Store) InspectionStation(ctx context.Context, db DBTX, organizationID, stationID string) (domain.InspectionStation, error) {
 	var station domain.InspectionStation
 	var active int

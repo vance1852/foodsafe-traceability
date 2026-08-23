@@ -152,27 +152,30 @@ func (s *Service) RegisterStation(ctx context.Context, actor domain.Actor, comma
 	if err := station.Validate(); err != nil {
 		return domain.InspectionStation{}, err
 	}
-	source, err := s.store.FoodFacility(ctx, s.store.DB(), actor.OrganizationID, station.FacilityID)
-	if err == nil {
-		zone, zoneErr := s.store.ProductionZone(ctx, s.store.DB(), actor.OrganizationID, station.ZoneID)
-		err = zoneErr
-		if err == nil && zone.FacilityID != source.ID {
-			err = &domain.ConflictError{Resource: "production zone", Key: zone.ID, Cause: errors.New("zone belongs to a different food facility")}
+	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+		source, err := s.store.FoodFacility(ctx, tx, actor.OrganizationID, station.FacilityID)
+		if err != nil {
+			return err
 		}
-		if err == nil && (!source.Active || !zone.Active) {
-			err = &domain.ConflictError{Resource: "inspection station", Key: station.Code, Cause: errors.New("source and zone must be active")}
+		zone, err := s.store.ProductionZone(ctx, tx, actor.OrganizationID, station.ZoneID)
+		if err != nil {
+			return err
 		}
-	}
-	if err == nil {
-		err = s.store.CommitInspectionStation(ctx, station)
-	}
-	if err == nil {
-		err = audit.Insert(ctx, s.store.DB(), domain.AuditEvent{
+		if zone.FacilityID != source.ID {
+			return &domain.ConflictError{Resource: "production zone", Key: zone.ID, Cause: errors.New("zone belongs to a different food facility")}
+		}
+		if !source.Active || !zone.Active {
+			return &domain.ConflictError{Resource: "inspection station", Key: station.Code, Cause: errors.New("source and zone must be active")}
+		}
+		if err := repository.InsertInspectionStation(ctx, tx, station); err != nil {
+			return err
+		}
+		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: command.RequestID, Action: "monitoring_station.register", ObjectType: "monitoring_station",
 			ObjectID: station.ID, Outcome: "success", Metadata: fmt.Sprintf(`{"facility_id":%q,"zone_id":%q}`, station.FacilityID, station.ZoneID), OccurredAt: now,
 		})
-	}
+	})
 	if err != nil {
 		return domain.InspectionStation{}, fmt.Errorf("register inspection station: %w", err)
 	}
