@@ -103,14 +103,33 @@ func (s *Service) PublishPlan(ctx context.Context, actor domain.Actor, planID, r
 		return domain.ErrForbidden
 	}
 	now := s.clock().UTC()
-	plan, err := s.store.CommitSamplingPlanPublication(ctx, actor.OrganizationID, planID, now)
-	if err == nil {
-		err = audit.Insert(ctx, s.store.DB(), domain.AuditEvent{
+	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+		plan, err := s.store.SamplingPlan(ctx, tx, actor.OrganizationID, planID)
+		if err != nil {
+			return err
+		}
+		if err := plan.CanTransition(domain.PlanPublished); err != nil {
+			return err
+		}
+		if !plan.WindowEnd.After(now) {
+			return &domain.TransitionError{Entity: "sampling plan", From: string(plan.Status), To: string(domain.PlanPublished), Reason: "sampling window has already ended"}
+		}
+		station, err := s.store.InspectionStation(ctx, tx, actor.OrganizationID, plan.StationID)
+		if err != nil {
+			return err
+		}
+		if station.FacilityID != plan.FacilityID || !station.Active {
+			return &domain.ConflictError{Resource: "inspection station", Key: station.ID, Cause: errors.New("station is inactive or belongs to another source")}
+		}
+		if err := s.store.TransitionSamplingPlan(ctx, tx, plan, domain.PlanPublished, now); err != nil {
+			return err
+		}
+		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: requestID, Action: "sampling_plan.publish", ObjectType: "sampling_plan",
 			ObjectID: plan.ID, Outcome: "success", Metadata: "{}", OccurredAt: now,
 		})
-	}
+	})
 	if err != nil {
 		return fmt.Errorf("publish sampling plan: %w", err)
 	}

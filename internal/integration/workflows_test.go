@@ -626,6 +626,140 @@ func TestAuditFailureRollsBackSourceRegistration(t *testing.T) {
 	}
 }
 
+func TestPublishPlanAuditFailureLeavesDraftAndRepublishable(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	graph := f.createSourceGraph(t)
+	now := time.Now().UTC()
+	plan, err := f.sampling.CreatePlan(ctx, f.supervisor, sampling.CreatePlanCommand{
+		FacilityID:      graph.source.ID,
+		StationID:       graph.station.ID,
+		AssignedUserID:  f.field.UserID,
+		WindowStart:     now.Add(-time.Hour),
+		WindowEnd:       now.Add(time.Hour),
+		RequiredBottles: 2,
+		RequestID:       "request-plan-audit-rollback",
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE audit_events`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.sampling.PublishPlan(ctx, f.supervisor, plan.ID, "request-publish-audit-failed"); err == nil {
+		t.Fatal("publish unexpectedly succeeded without audit table")
+	}
+	var status string
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT status FROM sampling_plans WHERE id = ?`, plan.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(domain.PlanDraft) {
+		t.Fatalf("audit failure leaked plan status = %s, want draft", status)
+	}
+
+	if _, err := f.store.DB().ExecContext(ctx, `
+CREATE TABLE audit_events (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations(id),
+    actor_user_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    occurred_at TEXT NOT NULL
+)`,
+	); err != nil {
+		t.Fatalf("restore audit_events table: %v", err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE INDEX idx_audit_object_time ON audit_events(organization_id, object_type, object_id, occurred_at)`); err != nil {
+		t.Fatalf("restore audit index: %v", err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE INDEX idx_audit_request ON audit_events(request_id)`); err != nil {
+		t.Fatalf("restore audit request index: %v", err)
+	}
+	if err := f.sampling.PublishPlan(ctx, f.supervisor, plan.ID, "request-publish-recovered"); err != nil {
+		t.Fatalf("republish after audit recovery: %v", err)
+	}
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT status FROM sampling_plans WHERE id = ?`, plan.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(domain.PlanPublished) {
+		t.Fatalf("republish plan status = %s, want published", status)
+	}
+	var audited int
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events WHERE object_id = ? AND action = 'sampling_plan.publish'`, plan.ID).Scan(&audited); err != nil {
+		t.Fatal(err)
+	}
+	if audited != 1 {
+		t.Fatalf("publish audit events = %d, want exactly one", audited)
+	}
+}
+
+func TestPublishPlanRejectsInactiveStationWithoutStatusChange(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	graph := f.createSourceGraph(t)
+	now := time.Now().UTC()
+	plan, err := f.sampling.CreatePlan(ctx, f.supervisor, sampling.CreatePlanCommand{
+		FacilityID:      graph.source.ID,
+		StationID:       graph.station.ID,
+		AssignedUserID:  f.field.UserID,
+		WindowStart:     now.Add(-time.Hour),
+		WindowEnd:       now.Add(time.Hour),
+		RequiredBottles: 2,
+		RequestID:       "request-plan-station-inactive",
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `UPDATE inspection_stations SET active = 0 WHERE id = ?`, graph.station.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.sampling.PublishPlan(ctx, f.supervisor, plan.ID, "request-publish-station-inactive"); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("inactive station error = %v, want conflict", err)
+	}
+	var status string
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT status FROM sampling_plans WHERE id = ?`, plan.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(domain.PlanDraft) {
+		t.Fatalf("inactive station leaked plan status = %s, want draft", status)
+	}
+}
+
+func TestPublishPlanRejectsExpiredWindowWithoutStatusChange(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	graph := f.createSourceGraph(t)
+	past := time.Now().UTC().Add(-2 * time.Hour)
+	plan, err := f.sampling.CreatePlan(ctx, f.supervisor, sampling.CreatePlanCommand{
+		FacilityID:      graph.source.ID,
+		StationID:       graph.station.ID,
+		AssignedUserID:  f.field.UserID,
+		WindowStart:     past,
+		WindowEnd:       past.Add(time.Hour),
+		RequiredBottles: 2,
+		RequestID:       "request-plan-expired-window",
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	err = f.sampling.PublishPlan(ctx, f.supervisor, plan.ID, "request-publish-expired-window")
+	var transition *domain.TransitionError
+	if !errors.As(err, &transition) {
+		t.Fatalf("expired window error = %v, want transition error", err)
+	}
+	var status string
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT status FROM sampling_plans WHERE id = ?`, plan.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(domain.PlanDraft) {
+		t.Fatalf("expired window leaked plan status = %s, want draft", status)
+	}
+}
+
 func TestContextCancellationPreventsTransactionCommit(t *testing.T) {
 	f := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())

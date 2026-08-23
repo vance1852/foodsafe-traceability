@@ -103,28 +103,6 @@ func (s *Store) TransitionSamplingPlan(ctx context.Context, tx *sql.Tx, plan dom
 	return nil
 }
 
-func (s *Store) CommitSamplingPlanPublication(ctx context.Context, organizationID, planID string, now time.Time) (domain.SamplingPlan, error) {
-	var plan domain.SamplingPlan
-	err := s.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		var err error
-		plan, err = s.SamplingPlan(ctx, tx, organizationID, planID)
-		if err != nil {
-			return err
-		}
-		if err := plan.CanTransition(domain.PlanPublished); err != nil {
-			return err
-		}
-		if !plan.WindowEnd.After(now) {
-			return &domain.TransitionError{Entity: "sampling plan", From: string(plan.Status), To: string(domain.PlanPublished), Reason: "sampling window has already ended"}
-		}
-		return s.TransitionSamplingPlan(ctx, tx, plan, domain.PlanPublished, now)
-	})
-	if err != nil {
-		return domain.SamplingPlan{}, fmt.Errorf("commit sampling plan publication: %w", err)
-	}
-	return plan, nil
-}
-
 func (s *Store) NextSampleSequence(ctx context.Context, tx *sql.Tx, organizationID, stationID, businessDay string) (int64, error) {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO sample_sequences(organization_id, station_id, business_day, next_value, version)
