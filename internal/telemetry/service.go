@@ -43,7 +43,6 @@ func (s *Service) Ingest(ctx context.Context, actor domain.Actor, command Ingest
 		return domain.TelemetryReading{}, false, err
 	}
 	created := false
-	var ingestAudit domain.AuditEvent
 	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
 		station, err := s.store.InspectionStation(ctx, tx, actor.OrganizationID, command.StationID)
 		if err != nil {
@@ -68,16 +67,18 @@ func (s *Service) Ingest(ctx context.Context, actor domain.Actor, command Ingest
 				return err
 			}
 		}
-		ingestAudit = domain.AuditEvent{
+		// Record the ingest audit inside the same transaction so an audit-store failure
+		// rolls back the reading and alert job. Otherwise a retry of the same external_id
+		// finds the committed reading and is treated as a duplicate even though the prior
+		// report never completed successfully.
+		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: command.RequestID, Action: "telemetry.ingest", ObjectType: "telemetry_reading", ObjectID: reading.ID,
 			Outcome: "success", Metadata: fmt.Sprintf(`{"station_id":%q,"parameter":%q,"exceeds":%t}`, reading.StationID, reading.Parameter, reading.ExceedsThreshold()), OccurredAt: now,
-		}
-		return nil
+		})
 	})
 	if err != nil {
 		return domain.TelemetryReading{}, false, fmt.Errorf("ingest telemetry reading: %w", err)
 	}
-	if created { if err := audit.Insert(ctx, s.store.IngestAuditDB(), ingestAudit); err != nil { return domain.TelemetryReading{}, false, fmt.Errorf("ingest telemetry audit: %w", err) } }
 	return reading, created, nil
 }

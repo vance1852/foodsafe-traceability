@@ -10,8 +10,6 @@ import (
 	"github.com/vance1852/foodsafe-traceability/internal/domain"
 )
 
-func (s *Store) IngestAuditDB() *sql.DB { return s.db }
-
 func InsertTelemetryReading(ctx context.Context, db DBTX, reading domain.TelemetryReading) (bool, error) {
 	result, err := db.ExecContext(ctx, `
 		INSERT INTO telemetry_readings(
