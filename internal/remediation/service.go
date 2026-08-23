@@ -63,43 +63,47 @@ func (s *Service) CreatePlan(ctx context.Context, actor domain.Actor, command Cr
 	if err := plan.Validate(); err != nil {
 		return domain.RemediationPlan{}, err
 	}
-	incident, err := s.store.Incident(ctx, s.store.DB(), actor.OrganizationID, command.IncidentID)
-	if err != nil {
-		return domain.RemediationPlan{}, fmt.Errorf("create remediation plan: %w", err)
-	}
-	if incident.Status == domain.IncidentResolved {
-		return domain.RemediationPlan{}, &domain.ConflictError{Resource: "incident", Key: incident.ID, Cause: errors.New("resolved incident cannot receive a remediation plan")}
-	}
+	// Validate every action up front so a single invalid action cannot leave a
+	// partial plan behind: header, actions and audit commit together or not at all.
+	actions := make([]domain.RemediationAction, 0, len(command.Actions))
 	uniqueKeys := make(map[string]struct{}, len(command.Actions))
-	for _, input := range command.Actions {
-		key := strings.TrimSpace(input.IdempotencyKey)
-		if _, exists := uniqueKeys[key]; exists {
-			return domain.RemediationPlan{}, &domain.ConflictError{Resource: "remediation action key", Key: key, Cause: errors.New("duplicate key within plan")}
-		}
-		uniqueKeys[key] = struct{}{}
-	}
-	if err := s.store.CommitRemediationPlanHeader(ctx, plan); err != nil {
-		return domain.RemediationPlan{}, fmt.Errorf("create remediation plan: %w", err)
-	}
 	for _, input := range command.Actions {
 		key := strings.TrimSpace(input.IdempotencyKey)
 		description := strings.TrimSpace(input.Description)
 		if key == "" || len(description) < 5 {
 			return domain.RemediationPlan{}, domain.NewValidationError("create remediation action", domain.FieldViolation{Field: "action", Rule: "idempotency key and meaningful description are required"})
 		}
-		action := domain.RemediationAction{
+		if _, exists := uniqueKeys[key]; exists {
+			return domain.RemediationPlan{}, &domain.ConflictError{Resource: "remediation action key", Key: key, Cause: errors.New("duplicate key within plan")}
+		}
+		uniqueKeys[key] = struct{}{}
+		actions = append(actions, domain.RemediationAction{
 			ID: uuid.NewString(), PlanID: plan.ID, OrganizationID: actor.OrganizationID,
 			IdempotencyKey: key, Description: description, Status: domain.ActionPending,
 			Version: 1, CreatedAt: now, UpdatedAt: now,
-		}
-		if err := repository.InsertRemediationAction(ctx, s.store.DB(), action); err != nil {
-			return domain.RemediationPlan{}, fmt.Errorf("create remediation plan: %w", err)
-		}
+		})
 	}
-	err = audit.Insert(ctx, s.store.DB(), domain.AuditEvent{
-		ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
-		RequestID: command.RequestID, Action: "remediation_plan.create", ObjectType: "remediation_plan", ObjectID: plan.ID,
-		Outcome: "success", Metadata: fmt.Sprintf(`{"incident_id":%q,"action_count":%d}`, plan.IncidentID, len(command.Actions)), OccurredAt: now,
+	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+		incident, err := s.store.Incident(ctx, tx, actor.OrganizationID, command.IncidentID)
+		if err != nil {
+			return err
+		}
+		if incident.Status == domain.IncidentResolved {
+			return &domain.ConflictError{Resource: "incident", Key: incident.ID, Cause: errors.New("resolved incident cannot receive a remediation plan")}
+		}
+		if err := repository.InsertRemediationPlan(ctx, tx, plan); err != nil {
+			return err
+		}
+		for _, action := range actions {
+			if err := repository.InsertRemediationAction(ctx, tx, action); err != nil {
+				return err
+			}
+		}
+		return audit.Insert(ctx, tx, domain.AuditEvent{
+			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
+			RequestID: command.RequestID, Action: "remediation_plan.create", ObjectType: "remediation_plan", ObjectID: plan.ID,
+			Outcome: "success", Metadata: fmt.Sprintf(`{"incident_id":%q,"action_count":%d}`, plan.IncidentID, len(actions)), OccurredAt: now,
+		})
 	})
 	if err != nil {
 		return domain.RemediationPlan{}, fmt.Errorf("create remediation plan: %w", err)

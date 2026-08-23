@@ -536,6 +536,54 @@ func TestRemediationCreationRollsBackDuplicateActionKeys(t *testing.T) {
 	}
 }
 
+func TestRemediationCreationRollsBackInvalidAction(t *testing.T) {
+	f := newFixture(t)
+	graph := f.createSourceGraph(t)
+	reported, err := f.incidents.Report(context.Background(), f.field, incident.ReportCommand{FacilityID: graph.source.ID, Title: "Sanitation failure response", Description: "A sanitation cycle failed and needs staged corrective action", Severity: domain.SeverityAdvisory, RequestID: "incident-sanitation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The second action carries a description that is too short, mimicking the
+	// hastily-written swab action that should invalidate the whole plan.
+	_, err = f.remediation.CreatePlan(context.Background(), f.supervisor, remediation.CreatePlanCommand{IncidentID: reported.ID, Title: "Sanitation recovery", Objective: "Reclean equipment and reverify swab results", BudgetCents: 100000, Actions: []remediation.CreateAction{{IdempotencyKey: "reclean-equipment", Description: "Disassemble and reclean the processing line"}, {IdempotencyKey: "reverify-swabs", Description: "bad"}}, RequestID: "remediation-invalid-action"})
+	if err == nil {
+		t.Fatal("invalid action creation unexpectedly succeeded")
+	}
+
+	var plans, actions, audits int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM remediation_plans WHERE incident_id = ?`, reported.ID).Scan(&plans); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM remediation_actions`).Scan(&actions); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action = 'remediation_plan.create'`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if plans != 0 || actions != 0 || audits != 0 {
+		t.Fatalf("invalid action leaked plans=%d actions=%d audits=%d", plans, actions, audits)
+	}
+
+	// Re-submitting the corrected plan must yield exactly one complete plan.
+	plan, err := f.remediation.CreatePlan(context.Background(), f.supervisor, remediation.CreatePlanCommand{IncidentID: reported.ID, Title: "Sanitation recovery", Objective: "Reclean equipment and reverify swab results", BudgetCents: 100000, Actions: []remediation.CreateAction{{IdempotencyKey: "reclean-equipment", Description: "Disassemble and reclean the processing line"}, {IdempotencyKey: "reverify-swabs", Description: "Re-run environmental swab verification"}}, RequestID: "remediation-resubmit"})
+	if err != nil {
+		t.Fatalf("resubmit failed: %v", err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM remediation_plans WHERE incident_id = ?`, reported.ID).Scan(&plans); err != nil {
+		t.Fatal(err)
+	}
+	if plans != 1 {
+		t.Fatalf("expected a single complete plan after resubmit, got %d", plans)
+	}
+	var actionCount int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM remediation_actions WHERE plan_id = ?`, plan.ID).Scan(&actionCount); err != nil {
+		t.Fatal(err)
+	}
+	if actionCount != 2 {
+		t.Fatalf("expected 2 actions on the complete plan, got %d", actionCount)
+	}
+}
+
 func TestTelemetryIngestIsIdempotentAndCreatesSingleAlertJob(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)

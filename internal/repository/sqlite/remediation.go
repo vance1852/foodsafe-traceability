@@ -26,15 +26,6 @@ func InsertRemediationPlan(ctx context.Context, db DBTX, plan domain.Remediation
 	return nil
 }
 
-func (s *Store) CommitRemediationPlanHeader(ctx context.Context, plan domain.RemediationPlan) error {
-	return s.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		if _, err := s.Incident(ctx, tx, plan.OrganizationID, plan.IncidentID); err != nil {
-			return err
-		}
-		return InsertRemediationPlan(ctx, tx, plan)
-	})
-}
-
 func scanRemediationPlan(scanner interface{ Scan(...any) error }) (domain.RemediationPlan, error) {
 	var plan domain.RemediationPlan
 	var status, created, updated string
