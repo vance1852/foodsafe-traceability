@@ -147,10 +147,10 @@ func (s *Service) Review(ctx context.Context, actor domain.Actor, resultID strin
 				}
 				_, err := tx.ExecContext(ctx, `
 					INSERT INTO incidents(
-						id, organization_id, source_id, originating_result_id, title, description,
+						id, organization_id, facility_id, originating_result_id, title, description,
 						severity, status, lease_generation, version, reported_at, created_at, updated_at
 					)
-					SELECT ?, ?, sp.source_id, ?, ?, ?, ?, 'reported', 0, 1, ?, ?, ?
+					SELECT ?, ?, sp.facility_id, ?, ?, ?, ?, 'reported', 0, 1, ?, ?, ?
 					FROM samples s JOIN sampling_plans sp ON sp.id = s.plan_id
 					WHERE s.id = ? AND s.organization_id = ?`,
 					incidentID, actor.OrganizationID, result.ID,

@@ -34,7 +34,7 @@ func seedOwnershipGraph(t *testing.T, store *Store) {
 		t.Fatalf("CreateOrganization() error = %v", err)
 	}
 	users := []domain.User{
-		{ID: "supervisor", OrganizationID: "org-1", Email: "supervisor@example.test", PasswordHash: "hash", Role: domain.RoleProtectionSupervisor, Active: true, AuthGeneration: 1, CreatedAt: now, UpdatedAt: now},
+		{ID: "supervisor", OrganizationID: "org-1", Email: "supervisor@example.test", PasswordHash: "hash", Role: domain.RoleSafetySupervisor, Active: true, AuthGeneration: 1, CreatedAt: now, UpdatedAt: now},
 		{ID: "field", OrganizationID: "org-1", Email: "field@example.test", PasswordHash: "hash", Role: domain.RoleFieldOperator, Active: true, AuthGeneration: 1, CreatedAt: now, UpdatedAt: now},
 		{ID: "analyst", OrganizationID: "org-1", Email: "analyst@example.test", PasswordHash: "hash", Role: domain.RoleLabAnalyst, Active: true, AuthGeneration: 1, CreatedAt: now, UpdatedAt: now},
 	}
@@ -47,11 +47,11 @@ func seedOwnershipGraph(t *testing.T, store *Store) {
 	if err := InsertFoodFacility(ctx, store.DB(), source); err != nil {
 		t.Fatalf("InsertFoodFacility() error = %v", err)
 	}
-	zone := domain.ProductionZone{ID: "zone-1", SourceID: source.ID, OrganizationID: "org-1", Name: "Primary zone", Level: domain.ZonePrimary, AreaSquareMeters: 1000, Active: true, Version: 1, CreatedAt: now, UpdatedAt: now}
+	zone := domain.ProductionZone{ID: "zone-1", FacilityID: source.ID, OrganizationID: "org-1", Name: "Primary zone", Level: domain.ZonePrimary, AreaSquareMeters: 1000, Active: true, Version: 1, CreatedAt: now, UpdatedAt: now}
 	if err := InsertProductionZone(ctx, store.DB(), zone); err != nil {
 		t.Fatalf("InsertProductionZone() error = %v", err)
 	}
-	station := domain.InspectionStation{ID: "station-1", SourceID: source.ID, ZoneID: zone.ID, OrganizationID: "org-1", Code: "NORTH", Name: "North intake", Latitude: 31, Longitude: 121, Active: true, Version: 1, CreatedAt: now, UpdatedAt: now}
+	station := domain.InspectionStation{ID: "station-1", FacilityID: source.ID, ZoneID: zone.ID, OrganizationID: "org-1", Code: "NORTH", Name: "North intake", Latitude: 31, Longitude: 121, Active: true, Version: 1, CreatedAt: now, UpdatedAt: now}
 	if err := InsertInspectionStation(ctx, store.DB(), station); err != nil {
 		t.Fatalf("InsertInspectionStation() error = %v", err)
 	}
@@ -75,7 +75,7 @@ func TestMigrateBuildsExpectedRelationalSchema(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate tables: %v", err)
 	}
-	required := []string{"organizations", "users", "sessions", "food_facilities", "production_zones", "inspection_stations", "sampling_plans", "samples", "custody_events", "lab_results", "incidents", "containment_assignments", "remediation_plans", "remediation_actions", "permits", "discharge_events", "telemetry_readings", "alert_jobs", "audit_events", "outbox_events", "idempotency_records"}
+	required := []string{"organizations", "users", "sessions", "food_facilities", "production_zones", "inspection_stations", "sampling_plans", "samples", "custody_events", "lab_results", "incidents", "containment_assignments", "remediation_plans", "remediation_actions", "permits", "shipment_release_events", "telemetry_readings", "alert_jobs", "audit_events", "outbox_events", "idempotency_records"}
 	for _, table := range required {
 		if !seen[table] {
 			t.Errorf("migration did not create %s", table)
@@ -101,7 +101,7 @@ func TestMigrateBuildsExpectedRelationalSchema(t *testing.T) {
 
 func TestForeignKeysRejectCrossEntityOrphans(t *testing.T) {
 	store := openTestStore(t)
-	_, err := store.DB().Exec(`INSERT INTO inspection_stations(id, source_id, zone_id, organization_id, code, name, latitude, longitude, active, version, created_at, updated_at) VALUES ('station', 'missing', 'missing', 'missing', 'S', 'orphan', 0, 0, 1, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	_, err := store.DB().Exec(`INSERT INTO inspection_stations(id, facility_id, zone_id, organization_id, code, name, latitude, longitude, active, version, created_at, updated_at) VALUES ('station', 'missing', 'missing', 'missing', 'S', 'orphan', 0, 0, 1, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
 	if err == nil {
 		t.Fatal("orphan station insert unexpectedly succeeded")
 	}

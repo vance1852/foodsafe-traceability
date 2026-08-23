@@ -24,7 +24,7 @@ Clients log in through `POST /v1/auth/login` and receive an opaque bearer token 
 
 - `field_operator` collects food samples, transfers custody, reports contamination, and completes assigned corrective actions.
 - `lab_analyst` receives custody, records results, and submits results for independent review.
-- `protection_supervisor` registers food facilities, publishes plans, reviews results, controls operating permits, leads incidents, and approves corrective actions.
+- `safety_supervisor` registers food facilities, publishes plans, reviews results, controls operating permits, leads incidents, and approves corrective actions.
 
 Authentication, expiry, revocation, role denial, persistence, and HTTP error mapping are covered by service, database, and API tests.
 

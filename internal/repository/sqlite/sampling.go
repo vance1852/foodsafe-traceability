@@ -13,10 +13,10 @@ import (
 func InsertSamplingPlan(ctx context.Context, db DBTX, plan domain.SamplingPlan) error {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO sampling_plans(
-			id, organization_id, source_id, station_id, assigned_user_id,
+			id, organization_id, facility_id, station_id, assigned_user_id,
 			window_start, window_end, required_bottles, status, version, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		plan.ID, plan.OrganizationID, plan.SourceID, plan.StationID, plan.AssignedUserID,
+		plan.ID, plan.OrganizationID, plan.FacilityID, plan.StationID, plan.AssignedUserID,
 		formatTime(plan.WindowStart), formatTime(plan.WindowEnd), plan.RequiredBottles,
 		string(plan.Status), plan.Version, formatTime(plan.CreatedAt), formatTime(plan.UpdatedAt),
 	)
@@ -30,7 +30,7 @@ func scanSamplingPlan(scanner interface{ Scan(...any) error }) (domain.SamplingP
 	var plan domain.SamplingPlan
 	var windowStart, windowEnd, status, created, updated string
 	err := scanner.Scan(
-		&plan.ID, &plan.OrganizationID, &plan.SourceID, &plan.StationID, &plan.AssignedUserID,
+		&plan.ID, &plan.OrganizationID, &plan.FacilityID, &plan.StationID, &plan.AssignedUserID,
 		&windowStart, &windowEnd, &plan.RequiredBottles, &status, &plan.Version, &created, &updated,
 	)
 	if err != nil {
@@ -54,7 +54,7 @@ func scanSamplingPlan(scanner interface{ Scan(...any) error }) (domain.SamplingP
 }
 
 const selectSamplingPlan = `
-	id, organization_id, source_id, station_id, assigned_user_id,
+	id, organization_id, facility_id, station_id, assigned_user_id,
 	window_start, window_end, required_bottles, status, version, created_at, updated_at`
 
 func (s *Store) SamplingPlan(ctx context.Context, db DBTX, organizationID, planID string) (domain.SamplingPlan, error) {

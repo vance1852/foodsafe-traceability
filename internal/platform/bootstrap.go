@@ -45,7 +45,7 @@ func Bootstrap(ctx context.Context, store *repository.Store, config BootstrapCon
 	}
 	user := domain.User{
 		ID: uuid.NewString(), OrganizationID: config.OrganizationID, Email: config.SupervisorEmail,
-		PasswordHash: hash, Role: domain.RoleProtectionSupervisor, Active: true,
+		PasswordHash: hash, Role: domain.RoleSafetySupervisor, Active: true,
 		AuthGeneration: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := store.CreateUser(ctx, user); err != nil {

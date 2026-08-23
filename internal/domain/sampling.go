@@ -18,7 +18,7 @@ const (
 type SamplingPlan struct {
 	ID              string
 	OrganizationID  string
-	SourceID        string
+	FacilityID      string
 	StationID       string
 	AssignedUserID  string
 	WindowStart     time.Time
@@ -32,7 +32,7 @@ type SamplingPlan struct {
 
 func (p SamplingPlan) Validate() error {
 	var violations []FieldViolation
-	if p.OrganizationID == "" || p.SourceID == "" || p.StationID == "" {
+	if p.OrganizationID == "" || p.FacilityID == "" || p.StationID == "" {
 		violations = append(violations, FieldViolation{Field: "ownership", Rule: "organization, source and station are required"})
 	}
 	if p.AssignedUserID == "" {

@@ -18,7 +18,7 @@ func TestRoleCapabilities(t *testing.T) {
 	}{
 		{name: "field operator", role: RoleFieldOperator, valid: true, collect: true},
 		{name: "lab analyst", role: RoleLabAnalyst, valid: true, analyze: true},
-		{name: "supervisor", role: RoleProtectionSupervisor, valid: true, collect: true, analyze: true, supervise: true},
+		{name: "supervisor", role: RoleSafetySupervisor, valid: true, collect: true, analyze: true, supervise: true},
 		{name: "unknown", role: Role("guest")},
 	}
 	for _, test := range tests {
@@ -103,7 +103,7 @@ func TestSourceAndZoneValidation(t *testing.T) {
 			t.Errorf("source case %d: error = %v", index, err)
 		}
 	}
-	zone := ProductionZone{SourceID: "src", OrganizationID: "org", Name: "Primary production zone", Level: ZonePrimary, AreaSquareMeters: 5000}
+	zone := ProductionZone{FacilityID: "src", OrganizationID: "org", Name: "Primary production zone", Level: ZonePrimary, AreaSquareMeters: 5000}
 	if err := zone.Validate(); err != nil {
 		t.Fatalf("valid zone rejected: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestSourceAndZoneValidation(t *testing.T) {
 }
 
 func TestInspectionStationCoordinates(t *testing.T) {
-	valid := InspectionStation{SourceID: "src", ZoneID: "zone", OrganizationID: "org", Code: "N1", Name: "North inlet", Latitude: 31.2, Longitude: 121.4}
+	valid := InspectionStation{FacilityID: "src", ZoneID: "zone", OrganizationID: "org", Code: "N1", Name: "North inlet", Latitude: 31.2, Longitude: 121.4}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid station rejected: %v", err)
 	}

@@ -13,11 +13,11 @@ import (
 func InsertPermit(ctx context.Context, db DBTX, permit domain.Permit) error {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO permits(
-			id, organization_id, source_id, holder_name, reference,
+			id, organization_id, facility_id, holder_name, reference,
 			valid_from, valid_until, daily_volume_limit_liters,
 			status, version, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		permit.ID, permit.OrganizationID, permit.SourceID, permit.HolderName, permit.Reference,
+		permit.ID, permit.OrganizationID, permit.FacilityID, permit.HolderName, permit.Reference,
 		formatTime(permit.ValidFrom), formatTime(permit.ValidUntil), permit.DailyVolumeLimitLiters,
 		string(permit.Status), permit.Version, formatTime(permit.CreatedAt), formatTime(permit.UpdatedAt),
 	)
@@ -31,7 +31,7 @@ func scanPermit(scanner interface{ Scan(...any) error }) (domain.Permit, error) 
 	var permit domain.Permit
 	var validFrom, validUntil, status, created, updated string
 	err := scanner.Scan(
-		&permit.ID, &permit.OrganizationID, &permit.SourceID, &permit.HolderName,
+		&permit.ID, &permit.OrganizationID, &permit.FacilityID, &permit.HolderName,
 		&permit.Reference, &validFrom, &validUntil, &permit.DailyVolumeLimitLiters,
 		&status, &permit.Version, &created, &updated,
 	)
@@ -56,7 +56,7 @@ func scanPermit(scanner interface{ Scan(...any) error }) (domain.Permit, error) 
 }
 
 const selectPermit = `
-	id, organization_id, source_id, holder_name, reference,
+	id, organization_id, facility_id, holder_name, reference,
 	valid_from, valid_until, daily_volume_limit_liters,
 	status, version, created_at, updated_at`
 
@@ -90,22 +90,22 @@ func (s *Store) TransitionPermit(ctx context.Context, tx *sql.Tx, permit domain.
 	return nil
 }
 
-func (s *Store) DailyDischargeVolume(ctx context.Context, db DBTX, permitID string, dayStart, dayEnd time.Time) (int64, error) {
+func (s *Store) DailyShipmentReleaseVolume(ctx context.Context, db DBTX, permitID string, dayStart, dayEnd time.Time) (int64, error) {
 	var total int64
 	err := db.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(volume_liters), 0)
-		FROM discharge_events
+		FROM shipment_release_events
 		WHERE permit_id = ? AND occurred_at >= ? AND occurred_at < ?`,
 		permitID, formatTime(dayStart), formatTime(dayEnd)).Scan(&total)
 	if err != nil {
-		return 0, fmt.Errorf("sum daily discharge volume: %w", err)
+		return 0, fmt.Errorf("sum daily shipment release volume: %w", err)
 	}
 	return total, nil
 }
 
-func InsertDischargeEvent(ctx context.Context, db DBTX, event domain.DischargeEvent) (bool, error) {
+func InsertShipmentReleaseEvent(ctx context.Context, db DBTX, event domain.ShipmentReleaseEvent) (bool, error) {
 	result, err := db.ExecContext(ctx, `
-		INSERT INTO discharge_events(
+		INSERT INTO shipment_release_events(
 			id, organization_id, permit_id, idempotency_key,
 			volume_liters, occurred_at, reported_by, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -118,34 +118,34 @@ func InsertDischargeEvent(ctx context.Context, db DBTX, event domain.DischargeEv
 	}
 	changed, err := result.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("read discharge insert count: %w", err)
+		return false, fmt.Errorf("read shipment release insert count: %w", err)
 	}
 	return changed == 1, nil
 }
 
-func (s *Store) ExistingDischargeByKey(ctx context.Context, db DBTX, organizationID, permitID, key string) (domain.DischargeEvent, error) {
-	var event domain.DischargeEvent
+func (s *Store) ExistingShipmentReleaseByKey(ctx context.Context, db DBTX, organizationID, permitID, key string) (domain.ShipmentReleaseEvent, error) {
+	var event domain.ShipmentReleaseEvent
 	var occurred, created string
 	err := db.QueryRowContext(ctx, `
 		SELECT id, organization_id, permit_id, idempotency_key,
 		       volume_liters, occurred_at, reported_by, created_at
-		FROM discharge_events
+		FROM shipment_release_events
 		WHERE organization_id = ? AND permit_id = ? AND idempotency_key = ?`,
 		organizationID, permitID, key).Scan(
 		&event.ID, &event.OrganizationID, &event.PermitID, &event.IdempotencyKey,
 		&event.VolumeLiters, &occurred, &event.ReportedBy, &created,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		return domain.DischargeEvent{}, &domain.NotFoundError{Resource: "shipment release event", ID: key}
+		return domain.ShipmentReleaseEvent{}, &domain.NotFoundError{Resource: "shipment release event", ID: key}
 	}
 	if err != nil {
-		return domain.DischargeEvent{}, fmt.Errorf("select discharge by idempotency key: %w", err)
+		return domain.ShipmentReleaseEvent{}, fmt.Errorf("select shipment release by idempotency key: %w", err)
 	}
 	if event.OccurredAt, err = parseTime(occurred); err != nil {
-		return domain.DischargeEvent{}, err
+		return domain.ShipmentReleaseEvent{}, err
 	}
 	if event.CreatedAt, err = parseTime(created); err != nil {
-		return domain.DischargeEvent{}, err
+		return domain.ShipmentReleaseEvent{}, err
 	}
 	return event, nil
 }

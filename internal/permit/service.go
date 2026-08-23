@@ -21,7 +21,7 @@ type Service struct {
 }
 
 type CreateCommand struct {
-	SourceID               string
+	FacilityID             string
 	HolderName             string
 	Reference              string
 	ValidFrom              time.Time
@@ -30,7 +30,7 @@ type CreateCommand struct {
 	RequestID              string
 }
 
-type ReportDischargeCommand struct {
+type ReportShipmentReleaseCommand struct {
 	PermitID       string
 	IdempotencyKey string
 	VolumeLiters   int64
@@ -48,7 +48,7 @@ func (s *Service) Create(ctx context.Context, actor domain.Actor, command Create
 	}
 	now := s.clock().UTC()
 	permit := domain.Permit{
-		ID: uuid.NewString(), OrganizationID: actor.OrganizationID, SourceID: command.SourceID,
+		ID: uuid.NewString(), OrganizationID: actor.OrganizationID, FacilityID: command.FacilityID,
 		HolderName: strings.TrimSpace(command.HolderName), Reference: strings.TrimSpace(command.Reference),
 		ValidFrom: command.ValidFrom.UTC(), ValidUntil: command.ValidUntil.UTC(),
 		DailyVolumeLimitLiters: command.DailyVolumeLimitLiters, Status: domain.PermitDraft,
@@ -58,7 +58,7 @@ func (s *Service) Create(ctx context.Context, actor domain.Actor, command Create
 		return domain.Permit{}, err
 	}
 	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		source, err := s.store.FoodFacility(ctx, tx, actor.OrganizationID, command.SourceID)
+		source, err := s.store.FoodFacility(ctx, tx, actor.OrganizationID, command.FacilityID)
 		if err != nil {
 			return err
 		}
@@ -71,7 +71,7 @@ func (s *Service) Create(ctx context.Context, actor domain.Actor, command Create
 		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: command.RequestID, Action: "permit.create", ObjectType: "permit", ObjectID: permit.ID,
-			Outcome: "success", Metadata: fmt.Sprintf(`{"source_id":%q,"reference":%q}`, permit.SourceID, permit.Reference), OccurredAt: now,
+			Outcome: "success", Metadata: fmt.Sprintf(`{"facility_id":%q,"reference":%q}`, permit.FacilityID, permit.Reference), OccurredAt: now,
 		})
 	})
 	if err != nil {
@@ -93,7 +93,7 @@ func (s *Service) Activate(ctx context.Context, actor domain.Actor, permitID, re
 		if err := permit.CanTransition(domain.PermitActive, now); err != nil {
 			return err
 		}
-		open, err := s.store.CountOpenExceedances(ctx, tx, actor.OrganizationID, permit.SourceID)
+		open, err := s.store.CountOpenExceedances(ctx, tx, actor.OrganizationID, permit.FacilityID)
 		if err != nil {
 			return err
 		}
@@ -154,18 +154,18 @@ func (s *Service) Suspend(ctx context.Context, actor domain.Actor, permitID, rea
 	return nil
 }
 
-func (s *Service) ReportDischarge(ctx context.Context, actor domain.Actor, command ReportDischargeCommand) (domain.DischargeEvent, bool, error) {
+func (s *Service) ReportShipmentRelease(ctx context.Context, actor domain.Actor, command ReportShipmentReleaseCommand) (domain.ShipmentReleaseEvent, bool, error) {
 	when := command.OccurredAt.UTC()
 	if command.OccurredAt.IsZero() {
 		when = s.clock().UTC()
 	}
-	event := domain.DischargeEvent{
+	event := domain.ShipmentReleaseEvent{
 		ID: uuid.NewString(), OrganizationID: actor.OrganizationID, PermitID: command.PermitID,
 		IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), VolumeLiters: command.VolumeLiters,
 		OccurredAt: when, ReportedBy: actor.UserID, CreatedAt: s.clock().UTC(),
 	}
 	if err := event.Validate(); err != nil {
-		return domain.DischargeEvent{}, false, err
+		return domain.ShipmentReleaseEvent{}, false, err
 	}
 	created := false
 	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
@@ -174,25 +174,25 @@ func (s *Service) ReportDischarge(ctx context.Context, actor domain.Actor, comma
 			return err
 		}
 		if permit.Status != domain.PermitActive || when.Before(permit.ValidFrom) || !when.Before(permit.ValidUntil) {
-			return &domain.ConflictError{Resource: "permit", Key: permit.ID, Cause: errors.New("permit is not active at discharge time")}
+			return &domain.ConflictError{Resource: "permit", Key: permit.ID, Cause: errors.New("permit is not active at shipment release time")}
 		}
-		created, err = repository.InsertDischargeEvent(ctx, tx, event)
+		created, err = repository.InsertShipmentReleaseEvent(ctx, tx, event)
 		if err != nil {
 			return err
 		}
 		if !created {
-			existing, err := s.store.ExistingDischargeByKey(ctx, tx, actor.OrganizationID, permit.ID, event.IdempotencyKey)
+			existing, err := s.store.ExistingShipmentReleaseByKey(ctx, tx, actor.OrganizationID, permit.ID, event.IdempotencyKey)
 			if err != nil {
 				return err
 			}
 			if existing.VolumeLiters != event.VolumeLiters || !existing.OccurredAt.Equal(event.OccurredAt) {
-				return &domain.ConflictError{Resource: "idempotency key", Key: event.IdempotencyKey, Cause: errors.New("key was used for a different discharge")}
+				return &domain.ConflictError{Resource: "idempotency key", Key: event.IdempotencyKey, Cause: errors.New("key was used for a different shipment release")}
 			}
 			event = existing
 			return nil
 		}
 		dayStart := time.Date(when.Year(), when.Month(), when.Day(), 0, 0, 0, 0, time.UTC)
-		total, err := s.store.DailyDischargeVolume(ctx, tx, permit.ID, dayStart, dayStart.Add(24*time.Hour))
+		total, err := s.store.DailyShipmentReleaseVolume(ctx, tx, permit.ID, dayStart, dayStart.Add(24*time.Hour))
 		if err != nil {
 			return err
 		}
@@ -201,12 +201,12 @@ func (s *Service) ReportDischarge(ctx context.Context, actor domain.Actor, comma
 		}
 		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
-			RequestID: command.RequestID, Action: "discharge.report", ObjectType: "discharge_event", ObjectID: event.ID,
+			RequestID: command.RequestID, Action: "shipment release.report", ObjectType: "shipment release_event", ObjectID: event.ID,
 			Outcome: "success", Metadata: fmt.Sprintf(`{"permit_id":%q,"volume_liters":%d}`, permit.ID, event.VolumeLiters), OccurredAt: event.CreatedAt,
 		})
 	})
 	if err != nil {
-		return domain.DischargeEvent{}, false, fmt.Errorf("report discharge: %w", err)
+		return domain.ShipmentReleaseEvent{}, false, fmt.Errorf("report shipment release: %w", err)
 	}
 	return event, created, nil
 }

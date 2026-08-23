@@ -19,7 +19,7 @@ type Service struct {
 }
 
 type CreatePlanCommand struct {
-	SourceID        string    `json:"source_id"`
+	FacilityID      string    `json:"facility_id"`
 	StationID       string    `json:"station_id"`
 	AssignedUserID  string    `json:"assigned_user_id"`
 	WindowStart     time.Time `json:"window_start"`
@@ -52,7 +52,7 @@ func (s *Service) CreatePlan(ctx context.Context, actor domain.Actor, command Cr
 	}
 	now := s.clock().UTC()
 	plan := domain.SamplingPlan{
-		ID: uuid.NewString(), OrganizationID: actor.OrganizationID, SourceID: command.SourceID,
+		ID: uuid.NewString(), OrganizationID: actor.OrganizationID, FacilityID: command.FacilityID,
 		StationID: command.StationID, AssignedUserID: command.AssignedUserID,
 		WindowStart: command.WindowStart.UTC(), WindowEnd: command.WindowEnd.UTC(),
 		RequiredBottles: command.RequiredBottles, Status: domain.PlanDraft, Version: 1,
@@ -66,14 +66,14 @@ func (s *Service) CreatePlan(ctx context.Context, actor domain.Actor, command Cr
 		if err != nil {
 			return err
 		}
-		if station.SourceID != command.SourceID || !station.Active {
+		if station.FacilityID != command.FacilityID || !station.Active {
 			return &domain.ConflictError{Resource: "inspection station", Key: station.ID, Cause: errors.New("station is inactive or belongs to another source")}
 		}
 		assignee, err := s.store.UserByID(ctx, tx, actor.OrganizationID, command.AssignedUserID)
 		if err != nil {
 			return err
 		}
-		if !assignee.Active || (assignee.Role != domain.RoleFieldOperator && assignee.Role != domain.RoleProtectionSupervisor) {
+		if !assignee.Active || (assignee.Role != domain.RoleFieldOperator && assignee.Role != domain.RoleSafetySupervisor) {
 			return &domain.ConflictError{Resource: "sampling assignee", Key: assignee.ID, Cause: errors.New("assignee is not an active field operator")}
 		}
 		overlaps, err := s.store.CountOverlappingPlans(ctx, tx, station.ID, plan.WindowStart, plan.WindowEnd, "")
@@ -164,7 +164,7 @@ func (s *Service) Collect(ctx context.Context, actor domain.Actor, command Colle
 		if err != nil {
 			return err
 		}
-		source, err := s.store.FoodFacility(ctx, tx, actor.OrganizationID, plan.SourceID)
+		source, err := s.store.FoodFacility(ctx, tx, actor.OrganizationID, plan.FacilityID)
 		if err != nil {
 			return err
 		}

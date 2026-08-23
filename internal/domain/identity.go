@@ -8,14 +8,14 @@ import (
 type Role string
 
 const (
-	RoleFieldOperator        Role = "field_operator"
-	RoleLabAnalyst           Role = "lab_analyst"
-	RoleProtectionSupervisor Role = "protection_supervisor"
+	RoleFieldOperator    Role = "field_operator"
+	RoleLabAnalyst       Role = "lab_analyst"
+	RoleSafetySupervisor Role = "safety_supervisor"
 )
 
 func (r Role) Valid() bool {
 	switch r {
-	case RoleFieldOperator, RoleLabAnalyst, RoleProtectionSupervisor:
+	case RoleFieldOperator, RoleLabAnalyst, RoleSafetySupervisor:
 		return true
 	default:
 		return false
@@ -49,12 +49,12 @@ func (a Actor) Validate() error {
 	return nil
 }
 
-func (a Actor) CanSupervise() bool { return a.Role == RoleProtectionSupervisor }
+func (a Actor) CanSupervise() bool { return a.Role == RoleSafetySupervisor }
 func (a Actor) CanAnalyze() bool {
-	return a.Role == RoleLabAnalyst || a.Role == RoleProtectionSupervisor
+	return a.Role == RoleLabAnalyst || a.Role == RoleSafetySupervisor
 }
 func (a Actor) CanCollect() bool {
-	return a.Role == RoleFieldOperator || a.Role == RoleProtectionSupervisor
+	return a.Role == RoleFieldOperator || a.Role == RoleSafetySupervisor
 }
 
 type User struct {

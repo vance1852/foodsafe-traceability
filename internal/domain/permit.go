@@ -18,7 +18,7 @@ const (
 type Permit struct {
 	ID                     string
 	OrganizationID         string
-	SourceID               string
+	FacilityID             string
 	HolderName             string
 	Reference              string
 	ValidFrom              time.Time
@@ -32,7 +32,7 @@ type Permit struct {
 
 func (p Permit) Validate() error {
 	var violations []FieldViolation
-	if p.OrganizationID == "" || p.SourceID == "" {
+	if p.OrganizationID == "" || p.FacilityID == "" {
 		violations = append(violations, FieldViolation{Field: "ownership", Rule: "organization and source are required"})
 	}
 	if strings.TrimSpace(p.HolderName) == "" || strings.TrimSpace(p.Reference) == "" {
@@ -67,7 +67,7 @@ func (p Permit) CanTransition(to PermitStatus, now time.Time) error {
 	return nil
 }
 
-type DischargeEvent struct {
+type ShipmentReleaseEvent struct {
 	ID             string
 	OrganizationID string
 	PermitID       string
@@ -78,7 +78,7 @@ type DischargeEvent struct {
 	CreatedAt      time.Time
 }
 
-func (e DischargeEvent) Validate() error {
+func (e ShipmentReleaseEvent) Validate() error {
 	var violations []FieldViolation
 	if e.OrganizationID == "" || e.PermitID == "" || e.ReportedBy == "" {
 		violations = append(violations, FieldViolation{Field: "ownership", Rule: "organization, permit and reporter are required"})

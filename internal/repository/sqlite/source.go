@@ -116,11 +116,11 @@ func (s *Store) ListFoodFacilities(ctx context.Context, organizationID string, a
 func InsertProductionZone(ctx context.Context, db DBTX, zone domain.ProductionZone) error {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO production_zones(
-			id, source_id, organization_id, name, level, area_square_meters,
+			id, facility_id, organization_id, name, level, area_square_meters,
 			active, version, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		zone.ID,
-		zone.SourceID,
+		zone.FacilityID,
 		zone.OrganizationID,
 		zone.Name,
 		string(zone.Level),
@@ -141,12 +141,12 @@ func (s *Store) ProductionZone(ctx context.Context, db DBTX, organizationID, zon
 	var level, created, updated string
 	var active int
 	err := db.QueryRowContext(ctx, `
-		SELECT id, source_id, organization_id, name, level, area_square_meters,
+		SELECT id, facility_id, organization_id, name, level, area_square_meters,
 		       active, version, created_at, updated_at
 		FROM production_zones
 		WHERE organization_id = ? AND id = ?`, organizationID, zoneID).Scan(
 		&zone.ID,
-		&zone.SourceID,
+		&zone.FacilityID,
 		&zone.OrganizationID,
 		&zone.Name,
 		&level,
@@ -176,11 +176,11 @@ func (s *Store) ProductionZone(ctx context.Context, db DBTX, organizationID, zon
 func InsertInspectionStation(ctx context.Context, db DBTX, station domain.InspectionStation) error {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO inspection_stations(
-			id, source_id, zone_id, organization_id, code, name,
+			id, facility_id, zone_id, organization_id, code, name,
 			latitude, longitude, active, version, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		station.ID,
-		station.SourceID,
+		station.FacilityID,
 		station.ZoneID,
 		station.OrganizationID,
 		strings.ToUpper(station.Code),
@@ -203,12 +203,12 @@ func (s *Store) InspectionStation(ctx context.Context, db DBTX, organizationID, 
 	var active int
 	var created, updated string
 	err := db.QueryRowContext(ctx, `
-		SELECT id, source_id, zone_id, organization_id, code, name,
+		SELECT id, facility_id, zone_id, organization_id, code, name,
 		       latitude, longitude, active, version, created_at, updated_at
 		FROM inspection_stations
 		WHERE organization_id = ? AND id = ?`, organizationID, stationID).Scan(
 		&station.ID,
-		&station.SourceID,
+		&station.FacilityID,
 		&station.ZoneID,
 		&station.OrganizationID,
 		&station.Code,
@@ -238,10 +238,10 @@ func (s *Store) InspectionStation(ctx context.Context, db DBTX, organizationID, 
 
 func (s *Store) ListStations(ctx context.Context, organizationID, sourceID string, activeOnly bool) ([]domain.InspectionStation, error) {
 	query := `
-		SELECT id, source_id, zone_id, organization_id, code, name,
+		SELECT id, facility_id, zone_id, organization_id, code, name,
 		       latitude, longitude, active, version, created_at, updated_at
 		FROM inspection_stations
-		WHERE organization_id = ? AND source_id = ?`
+		WHERE organization_id = ? AND facility_id = ?`
 	if activeOnly {
 		query += " AND active = 1"
 	}
@@ -258,7 +258,7 @@ func (s *Store) ListStations(ctx context.Context, organizationID, sourceID strin
 		var created, updated string
 		if err := rows.Scan(
 			&station.ID,
-			&station.SourceID,
+			&station.FacilityID,
 			&station.ZoneID,
 			&station.OrganizationID,
 			&station.Code,

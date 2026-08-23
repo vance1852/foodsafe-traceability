@@ -13,11 +13,11 @@ import (
 func InsertIncident(ctx context.Context, db DBTX, incident domain.Incident) error {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO incidents(
-			id, organization_id, source_id, title, description, severity, status,
+			id, organization_id, facility_id, title, description, severity, status,
 			commander_user_id, lease_token, lease_generation, lease_expires_at,
 			version, reported_at, resolved_at, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		incident.ID, incident.OrganizationID, incident.SourceID, incident.Title,
+		incident.ID, incident.OrganizationID, incident.FacilityID, incident.Title,
 		incident.Description, string(incident.Severity), string(incident.Status),
 		nullString(incident.CommanderUserID), nullString(incident.LeaseToken),
 		incident.LeaseGeneration, nullableTime(incident.LeaseExpiresAt), incident.Version,
@@ -35,7 +35,7 @@ func scanIncident(scanner interface{ Scan(...any) error }) (domain.Incident, err
 	var severity, status, reported, created, updated string
 	var commander, token, leaseExpires, resolved sql.NullString
 	err := scanner.Scan(
-		&incident.ID, &incident.OrganizationID, &incident.SourceID, &incident.Title,
+		&incident.ID, &incident.OrganizationID, &incident.FacilityID, &incident.Title,
 		&incident.Description, &severity, &status, &commander, &token,
 		&incident.LeaseGeneration, &leaseExpires, &incident.Version, &reported,
 		&resolved, &created, &updated,
@@ -79,7 +79,7 @@ func scanIncident(scanner interface{ Scan(...any) error }) (domain.Incident, err
 }
 
 const selectIncident = `
-	id, organization_id, source_id, title, description, severity, status,
+	id, organization_id, facility_id, title, description, severity, status,
 	commander_user_id, lease_token, lease_generation, lease_expires_at,
 	version, reported_at, resolved_at, created_at, updated_at`
 

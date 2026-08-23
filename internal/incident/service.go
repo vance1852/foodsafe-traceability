@@ -24,7 +24,7 @@ type Service struct {
 }
 
 type ReportCommand struct {
-	SourceID    string                  `json:"source_id"`
+	FacilityID  string                  `json:"facility_id"`
 	Title       string                  `json:"title"`
 	Description string                  `json:"description"`
 	Severity    domain.IncidentSeverity `json:"severity"`
@@ -49,7 +49,7 @@ func (s *Service) Report(ctx context.Context, actor domain.Actor, command Report
 	}
 	now := s.clock().UTC()
 	incident := domain.Incident{
-		ID: uuid.NewString(), OrganizationID: actor.OrganizationID, SourceID: command.SourceID,
+		ID: uuid.NewString(), OrganizationID: actor.OrganizationID, FacilityID: command.FacilityID,
 		Title: strings.TrimSpace(command.Title), Description: strings.TrimSpace(command.Description),
 		Severity: command.Severity, Status: domain.IncidentReported, Version: 1,
 		ReportedAt: now, CreatedAt: now, UpdatedAt: now,
@@ -58,7 +58,7 @@ func (s *Service) Report(ctx context.Context, actor domain.Actor, command Report
 		return domain.Incident{}, err
 	}
 	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		if _, err := s.store.FoodFacility(ctx, tx, actor.OrganizationID, command.SourceID); err != nil {
+		if _, err := s.store.FoodFacility(ctx, tx, actor.OrganizationID, command.FacilityID); err != nil {
 			return err
 		}
 		if err := repository.InsertIncident(ctx, tx, incident); err != nil {

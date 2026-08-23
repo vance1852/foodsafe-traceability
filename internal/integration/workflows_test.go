@@ -56,7 +56,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	users := []domain.User{
-		{ID: "supervisor", OrganizationID: "org-1", Email: "supervisor@example.test", PasswordHash: passwordHash, Role: domain.RoleProtectionSupervisor, Active: true, AuthGeneration: 1, CreatedAt: now, UpdatedAt: now},
+		{ID: "supervisor", OrganizationID: "org-1", Email: "supervisor@example.test", PasswordHash: passwordHash, Role: domain.RoleSafetySupervisor, Active: true, AuthGeneration: 1, CreatedAt: now, UpdatedAt: now},
 		{ID: "field", OrganizationID: "org-1", Email: "field@example.test", PasswordHash: passwordHash, Role: domain.RoleFieldOperator, Active: true, AuthGeneration: 1, CreatedAt: now, UpdatedAt: now},
 		{ID: "analyst", OrganizationID: "org-1", Email: "analyst@example.test", PasswordHash: passwordHash, Role: domain.RoleLabAnalyst, Active: true, AuthGeneration: 1, CreatedAt: now, UpdatedAt: now},
 	}
@@ -75,7 +75,7 @@ func newFixture(t *testing.T) *fixture {
 		incidents:   incident.NewService(store, 5*time.Minute),
 		remediation: remediation.NewService(store),
 		telemetry:   telemetry.NewService(store),
-		supervisor:  domain.Actor{UserID: "supervisor", OrganizationID: "org-1", Role: domain.RoleProtectionSupervisor, AuthGeneration: 1},
+		supervisor:  domain.Actor{UserID: "supervisor", OrganizationID: "org-1", Role: domain.RoleSafetySupervisor, AuthGeneration: 1},
 		field:       domain.Actor{UserID: "field", OrganizationID: "org-1", Role: domain.RoleFieldOperator, AuthGeneration: 1},
 		analyst:     domain.Actor{UserID: "analyst", OrganizationID: "org-1", Role: domain.RoleLabAnalyst, AuthGeneration: 1},
 	}
@@ -94,11 +94,11 @@ func (f *fixture) createSourceGraph(t *testing.T) sourceGraph {
 	if err != nil {
 		t.Fatalf("register source: %v", err)
 	}
-	zone, err := f.sources.RegisterZone(ctx, f.supervisor, source.RegisterZoneCommand{SourceID: createdSource.ID, Name: "Primary production zone", Level: domain.ZonePrimary, AreaSquareMeters: 50000, RequestID: "request-zone"})
+	zone, err := f.sources.RegisterZone(ctx, f.supervisor, source.RegisterZoneCommand{FacilityID: createdSource.ID, Name: "Primary production zone", Level: domain.ZonePrimary, AreaSquareMeters: 50000, RequestID: "request-zone"})
 	if err != nil {
 		t.Fatalf("register zone: %v", err)
 	}
-	station, err := f.sources.RegisterStation(ctx, f.supervisor, source.RegisterStationCommand{SourceID: createdSource.ID, ZoneID: zone.ID, Code: "NORTH-1", Name: "North inlet", Latitude: 31.2, Longitude: 121.4, RequestID: "request-station"})
+	station, err := f.sources.RegisterStation(ctx, f.supervisor, source.RegisterStationCommand{FacilityID: createdSource.ID, ZoneID: zone.ID, Code: "NORTH-1", Name: "North inlet", Latitude: 31.2, Longitude: 121.4, RequestID: "request-station"})
 	if err != nil {
 		t.Fatalf("register station: %v", err)
 	}
@@ -110,7 +110,7 @@ func (f *fixture) createReceivedSample(t *testing.T, graph sourceGraph) domain.S
 	ctx := context.Background()
 	now := time.Now().UTC()
 	plan, err := f.sampling.CreatePlan(ctx, f.supervisor, sampling.CreatePlanCommand{
-		SourceID:        graph.source.ID,
+		FacilityID:      graph.source.ID,
 		StationID:       graph.station.ID,
 		AssignedUserID:  f.field.UserID,
 		WindowStart:     now.Add(-time.Hour),
@@ -196,10 +196,10 @@ func TestAuthenticationRejectsBadPasswordAndPersistsFailure(t *testing.T) {
 func TestSourceGraphRegistrationIsTenantConsistentAndAudited(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)
-	if graph.zone.SourceID != graph.source.ID {
-		t.Fatalf("zone source = %s", graph.zone.SourceID)
+	if graph.zone.FacilityID != graph.source.ID {
+		t.Fatalf("zone source = %s", graph.zone.FacilityID)
 	}
-	if graph.station.SourceID != graph.source.ID || graph.station.ZoneID != graph.zone.ID {
+	if graph.station.FacilityID != graph.source.ID || graph.station.ZoneID != graph.zone.ID {
 		t.Fatalf("station ownership = %#v", graph.station)
 	}
 	var audits int
@@ -225,7 +225,7 @@ func TestStationCannotCrossProductionZoneSourceBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.sources.RegisterStation(context.Background(), f.supervisor, source.RegisterStationCommand{SourceID: second.ID, ZoneID: first.zone.ID, Code: "CROSS", Name: "Cross source station", Latitude: 30, Longitude: 120, RequestID: "request-cross"})
+	_, err = f.sources.RegisterStation(context.Background(), f.supervisor, source.RegisterStationCommand{FacilityID: second.ID, ZoneID: first.zone.ID, Code: "CROSS", Name: "Cross source station", Latitude: 30, Longitude: 120, RequestID: "request-cross"})
 	if !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("cross-source station error = %v", err)
 	}
@@ -274,7 +274,7 @@ func TestSamplingRejectsWrongBottleCountWithoutConsumingSequence(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)
 	now := time.Now().UTC()
-	plan, err := f.sampling.CreatePlan(context.Background(), f.supervisor, sampling.CreatePlanCommand{SourceID: graph.source.ID, StationID: graph.station.ID, AssignedUserID: f.field.UserID, WindowStart: now.Add(-time.Hour), WindowEnd: now.Add(time.Hour), RequiredBottles: 3, RequestID: "plan-bottles"})
+	plan, err := f.sampling.CreatePlan(context.Background(), f.supervisor, sampling.CreatePlanCommand{FacilityID: graph.source.ID, StationID: graph.station.ID, AssignedUserID: f.field.UserID, WindowStart: now.Add(-time.Hour), WindowEnd: now.Add(time.Hour), RequiredBottles: 3, RequestID: "plan-bottles"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,36 +366,36 @@ func TestLaboratorySelfReviewRollsBackAllState(t *testing.T) {
 	}
 }
 
-func TestPermitActivationAndDischargeIdempotency(t *testing.T) {
+func TestPermitActivationAndShipmentReleaseIdempotency(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)
 	now := time.Now().UTC()
-	created, err := f.permits.Create(context.Background(), f.supervisor, permit.CreateCommand{SourceID: graph.source.ID, HolderName: "Municipal Treatment Plant", Reference: "PERMIT-2026-1", ValidFrom: now.Add(-time.Hour), ValidUntil: now.Add(24 * time.Hour), DailyVolumeLimitLiters: 1000, RequestID: "permit-create"})
+	created, err := f.permits.Create(context.Background(), f.supervisor, permit.CreateCommand{FacilityID: graph.source.ID, HolderName: "Municipal Treatment Plant", Reference: "PERMIT-2026-1", ValidFrom: now.Add(-time.Hour), ValidUntil: now.Add(24 * time.Hour), DailyVolumeLimitLiters: 1000, RequestID: "permit-create"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := f.permits.Activate(context.Background(), f.supervisor, created.ID, "permit-activate"); err != nil {
 		t.Fatal(err)
 	}
-	command := permit.ReportDischargeCommand{PermitID: created.ID, IdempotencyKey: "discharge-key", VolumeLiters: 400, OccurredAt: now, RequestID: "discharge-1"}
-	first, inserted, err := f.permits.ReportDischarge(context.Background(), f.field, command)
+	command := permit.ReportShipmentReleaseCommand{PermitID: created.ID, IdempotencyKey: "shipment release-key", VolumeLiters: 400, OccurredAt: now, RequestID: "shipment release-1"}
+	first, inserted, err := f.permits.ReportShipmentRelease(context.Background(), f.field, command)
 	if err != nil || !inserted {
-		t.Fatalf("first discharge inserted=%v err=%v", inserted, err)
+		t.Fatalf("first shipment release inserted=%v err=%v", inserted, err)
 	}
-	second, inserted, err := f.permits.ReportDischarge(context.Background(), f.field, command)
+	second, inserted, err := f.permits.ReportShipmentRelease(context.Background(), f.field, command)
 	if err != nil || inserted {
-		t.Fatalf("repeat discharge inserted=%v err=%v", inserted, err)
+		t.Fatalf("repeat shipment release inserted=%v err=%v", inserted, err)
 	}
 	if first.ID != second.ID {
 		t.Fatalf("idempotent result ids differ: %s %s", first.ID, second.ID)
 	}
 	command.VolumeLiters = 401
-	if _, _, err := f.permits.ReportDischarge(context.Background(), f.field, command); !errors.Is(err, domain.ErrConflict) {
+	if _, _, err := f.permits.ReportShipmentRelease(context.Background(), f.field, command); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("key reuse error = %v", err)
 	}
-	command.IdempotencyKey = "discharge-over-limit"
+	command.IdempotencyKey = "shipment release-over-limit"
 	command.VolumeLiters = 700
-	if _, _, err := f.permits.ReportDischarge(context.Background(), f.field, command); !errors.Is(err, domain.ErrCapacityExceeded) {
+	if _, _, err := f.permits.ReportShipmentRelease(context.Background(), f.field, command); !errors.Is(err, domain.ErrCapacityExceeded) {
 		t.Fatalf("capacity error = %v", err)
 	}
 }
@@ -415,7 +415,7 @@ func TestPermitActivationBlockedByOpenExceedance(t *testing.T) {
 	if _, err := f.lab.Review(context.Background(), f.supervisor, result.ID, true, "permit-block-review"); err != nil {
 		t.Fatal(err)
 	}
-	created, err := f.permits.Create(context.Background(), f.supervisor, permit.CreateCommand{SourceID: graph.source.ID, HolderName: "Treatment Plant", Reference: "BLOCKED-1", ValidFrom: now.Add(-time.Hour), ValidUntil: now.Add(time.Hour), DailyVolumeLimitLiters: 100, RequestID: "permit-block-create"})
+	created, err := f.permits.Create(context.Background(), f.supervisor, permit.CreateCommand{FacilityID: graph.source.ID, HolderName: "Treatment Plant", Reference: "BLOCKED-1", ValidFrom: now.Add(-time.Hour), ValidUntil: now.Add(time.Hour), DailyVolumeLimitLiters: 100, RequestID: "permit-block-create"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ func TestPermitActivationBlockedByOpenExceedance(t *testing.T) {
 func TestIncidentClaimAndLeaseFenceAssignments(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)
-	reported, err := f.incidents.Report(context.Background(), f.field, incident.ReportCommand{SourceID: graph.source.ID, Title: "Fuel spill near intake", Description: "A fuel sheen was observed upstream of the intake", Severity: domain.SeverityCritical, RequestID: "incident-report"})
+	reported, err := f.incidents.Report(context.Background(), f.field, incident.ReportCommand{FacilityID: graph.source.ID, Title: "Fuel spill near intake", Description: "A fuel sheen was observed upstream of the intake", Severity: domain.SeverityCritical, RequestID: "incident-report"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +457,7 @@ func TestIncidentClaimAndLeaseFenceAssignments(t *testing.T) {
 func TestIncidentCannotResolveWithIncompleteContainment(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)
-	reported, err := f.incidents.Report(context.Background(), f.field, incident.ReportCommand{SourceID: graph.source.ID, Title: "Chemical runoff alert", Description: "Runoff entered a tributary after a containment breach", Severity: domain.SeveritySignificant, RequestID: "incident-runoff"})
+	reported, err := f.incidents.Report(context.Background(), f.field, incident.ReportCommand{FacilityID: graph.source.ID, Title: "Chemical runoff alert", Description: "Runoff entered a tributary after a containment breach", Severity: domain.SeveritySignificant, RequestID: "incident-runoff"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +480,7 @@ func TestIncidentCannotResolveWithIncompleteContainment(t *testing.T) {
 func TestRemediationPlanApprovalAndActionCompletion(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)
-	reported, err := f.incidents.Report(context.Background(), f.field, incident.ReportCommand{SourceID: graph.source.ID, Title: "Allergen cross-contact response", Description: "An undeclared allergen requires staged containment and corrective action", Severity: domain.SeveritySignificant, RequestID: "incident-allergen"})
+	reported, err := f.incidents.Report(context.Background(), f.field, incident.ReportCommand{FacilityID: graph.source.ID, Title: "Allergen cross-contact response", Description: "An undeclared allergen requires staged containment and corrective action", Severity: domain.SeveritySignificant, RequestID: "incident-allergen"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +519,7 @@ func TestRemediationPlanApprovalAndActionCompletion(t *testing.T) {
 func TestRemediationCreationRollsBackDuplicateActionKeys(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)
-	reported, err := f.incidents.Report(context.Background(), f.field, incident.ReportCommand{SourceID: graph.source.ID, Title: "Cold-chain excursion response", Description: "Temperature excursions threaten product safety at the facility", Severity: domain.SeverityAdvisory, RequestID: "incident-cold-chain"})
+	reported, err := f.incidents.Report(context.Background(), f.field, incident.ReportCommand{FacilityID: graph.source.ID, Title: "Cold-chain excursion response", Description: "Temperature excursions threaten product safety at the facility", Severity: domain.SeverityAdvisory, RequestID: "incident-cold-chain"})
 	if err != nil {
 		t.Fatal(err)
 	}

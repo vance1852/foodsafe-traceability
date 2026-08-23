@@ -59,7 +59,7 @@ const (
 
 type ProductionZone struct {
 	ID               string
-	SourceID         string
+	FacilityID       string
 	OrganizationID   string
 	Name             string
 	Level            ProductionZoneLevel
@@ -72,8 +72,8 @@ type ProductionZone struct {
 
 func (z ProductionZone) Validate() error {
 	var violations []FieldViolation
-	if z.SourceID == "" {
-		violations = append(violations, FieldViolation{Field: "source_id", Rule: "is required"})
+	if z.FacilityID == "" {
+		violations = append(violations, FieldViolation{Field: "facility_id", Rule: "is required"})
 	}
 	if z.OrganizationID == "" {
 		violations = append(violations, FieldViolation{Field: "organization_id", Rule: "is required"})
@@ -97,7 +97,7 @@ func (z ProductionZone) Validate() error {
 
 type InspectionStation struct {
 	ID             string
-	SourceID       string
+	FacilityID     string
 	ZoneID         string
 	OrganizationID string
 	Code           string
@@ -112,7 +112,7 @@ type InspectionStation struct {
 
 func (s InspectionStation) Validate() error {
 	var violations []FieldViolation
-	if s.SourceID == "" || s.ZoneID == "" || s.OrganizationID == "" {
+	if s.FacilityID == "" || s.ZoneID == "" || s.OrganizationID == "" {
 		violations = append(violations, FieldViolation{Field: "ownership", Rule: "source, zone and organization are required"})
 	}
 	if strings.TrimSpace(s.Code) == "" {

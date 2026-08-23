@@ -26,7 +26,7 @@ const (
 type Incident struct {
 	ID              string
 	OrganizationID  string
-	SourceID        string
+	FacilityID      string
 	Title           string
 	Description     string
 	Severity        IncidentSeverity
@@ -44,7 +44,7 @@ type Incident struct {
 
 func (i Incident) Validate() error {
 	var violations []FieldViolation
-	if i.OrganizationID == "" || i.SourceID == "" {
+	if i.OrganizationID == "" || i.FacilityID == "" {
 		violations = append(violations, FieldViolation{Field: "ownership", Rule: "organization and source are required"})
 	}
 	if len(strings.TrimSpace(i.Title)) < 5 {

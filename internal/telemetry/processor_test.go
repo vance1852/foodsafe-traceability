@@ -24,10 +24,10 @@ func TestAlertProcessorCreatesIncidentOutboxAndAuditAtomically(t *testing.T) {
 	if _, err := store.DB().ExecContext(ctx, `INSERT INTO food_facilities(id, organization_id, name, kind, timezone, active, version, created_at, updated_at) VALUES ('src', 'org', 'Foods Plant', 'processing_plant', 'UTC', 1, 1, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO production_zones(id, source_id, organization_id, name, level, area_square_meters, active, version, created_at, updated_at) VALUES ('zone', 'src', 'org', 'Primary', 'primary', 100, 1, 1, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO production_zones(id, facility_id, organization_id, name, level, area_square_meters, active, version, created_at, updated_at) VALUES ('zone', 'src', 'org', 'Primary', 'primary', 100, 1, 1, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO inspection_stations(id, source_id, zone_id, organization_id, code, name, latitude, longitude, active, version, created_at, updated_at) VALUES ('station', 'src', 'zone', 'org', 'S1', 'Station', 0, 0, 1, 1, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO inspection_stations(id, facility_id, zone_id, organization_id, code, name, latitude, longitude, active, version, created_at, updated_at) VALUES ('station', 'src', 'zone', 'org', 'S1', 'Station', 0, 0, 1, 1, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	reading := domain.TelemetryReading{ID: "reading", OrganizationID: "org", StationID: "station", ExternalID: "external", Parameter: "turbidity", Value: 12, Unit: "NTU", Threshold: 5, ObservedAt: now, ReceivedAt: now}
@@ -41,7 +41,7 @@ func TestAlertProcessorCreatesIncidentOutboxAndAuditAtomically(t *testing.T) {
 		t.Fatalf("ProcessAlert() error = %v", err)
 	}
 	var incidents, outbox, audits int
-	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM incidents WHERE source_id = 'src' AND severity = 'critical'`).Scan(&incidents); err != nil {
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM incidents WHERE facility_id = 'src' AND severity = 'critical'`).Scan(&incidents); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM outbox_events WHERE idempotency_key = 'telemetry:reading'`).Scan(&outbox); err != nil {
@@ -69,10 +69,10 @@ func TestAlertProcessorIgnoresReadingBelowThreshold(t *testing.T) {
 	if _, err := store.DB().ExecContext(ctx, `INSERT INTO food_facilities(id, organization_id, name, kind, timezone, active, version, created_at, updated_at) VALUES ('src', 'org', 'Foods Plant', 'processing_plant', 'UTC', 1, 1, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO production_zones(id, source_id, organization_id, name, level, area_square_meters, active, version, created_at, updated_at) VALUES ('zone', 'src', 'org', 'Primary', 'primary', 100, 1, 1, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO production_zones(id, facility_id, organization_id, name, level, area_square_meters, active, version, created_at, updated_at) VALUES ('zone', 'src', 'org', 'Primary', 'primary', 100, 1, 1, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO inspection_stations(id, source_id, zone_id, organization_id, code, name, latitude, longitude, active, version, created_at, updated_at) VALUES ('station', 'src', 'zone', 'org', 'S1', 'Station', 0, 0, 1, 1, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO inspection_stations(id, facility_id, zone_id, organization_id, code, name, latitude, longitude, active, version, created_at, updated_at) VALUES ('station', 'src', 'zone', 'org', 'S1', 'Station', 0, 0, 1, 1, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	reading := domain.TelemetryReading{ID: "reading", OrganizationID: "org", StationID: "station", ExternalID: "external", Parameter: "pH", Value: 7, Unit: "pH", Threshold: 8, ObservedAt: now, ReceivedAt: now}

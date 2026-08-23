@@ -28,7 +28,7 @@ type RegisterSourceCommand struct {
 }
 
 type RegisterZoneCommand struct {
-	SourceID         string                     `json:"source_id"`
+	FacilityID       string                     `json:"facility_id"`
 	Name             string                     `json:"name"`
 	Level            domain.ProductionZoneLevel `json:"level"`
 	AreaSquareMeters int64                      `json:"area_square_meters"`
@@ -36,13 +36,13 @@ type RegisterZoneCommand struct {
 }
 
 type RegisterStationCommand struct {
-	SourceID  string  `json:"source_id"`
-	ZoneID    string  `json:"zone_id"`
-	Code      string  `json:"code"`
-	Name      string  `json:"name"`
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
-	RequestID string  `json:"-"`
+	FacilityID string  `json:"facility_id"`
+	ZoneID     string  `json:"zone_id"`
+	Code       string  `json:"code"`
+	Name       string  `json:"name"`
+	Latitude   float64 `json:"latitude"`
+	Longitude  float64 `json:"longitude"`
+	RequestID  string  `json:"-"`
 }
 
 func NewService(store *repository.Store) *Service {
@@ -102,7 +102,7 @@ func (s *Service) RegisterZone(ctx context.Context, actor domain.Actor, command 
 	now := s.clock().UTC()
 	zone := domain.ProductionZone{
 		ID:               uuid.NewString(),
-		SourceID:         command.SourceID,
+		FacilityID:       command.FacilityID,
 		OrganizationID:   actor.OrganizationID,
 		Name:             strings.TrimSpace(command.Name),
 		Level:            command.Level,
@@ -116,7 +116,7 @@ func (s *Service) RegisterZone(ctx context.Context, actor domain.Actor, command 
 		return domain.ProductionZone{}, err
 	}
 	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		source, err := s.store.FoodFacility(ctx, tx, actor.OrganizationID, command.SourceID)
+		source, err := s.store.FoodFacility(ctx, tx, actor.OrganizationID, command.FacilityID)
 		if err != nil {
 			return err
 		}
@@ -129,7 +129,7 @@ func (s *Service) RegisterZone(ctx context.Context, actor domain.Actor, command 
 		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: command.RequestID, Action: "protection_zone.register", ObjectType: "protection_zone",
-			ObjectID: zone.ID, Outcome: "success", Metadata: fmt.Sprintf(`{"source_id":%q,"level":%q}`, zone.SourceID, zone.Level), OccurredAt: now,
+			ObjectID: zone.ID, Outcome: "success", Metadata: fmt.Sprintf(`{"facility_id":%q,"level":%q}`, zone.FacilityID, zone.Level), OccurredAt: now,
 		})
 	})
 	if err != nil {
@@ -144,7 +144,7 @@ func (s *Service) RegisterStation(ctx context.Context, actor domain.Actor, comma
 	}
 	now := s.clock().UTC()
 	station := domain.InspectionStation{
-		ID: uuid.NewString(), SourceID: command.SourceID, ZoneID: command.ZoneID,
+		ID: uuid.NewString(), FacilityID: command.FacilityID, ZoneID: command.ZoneID,
 		OrganizationID: actor.OrganizationID, Code: strings.ToUpper(strings.TrimSpace(command.Code)),
 		Name: strings.TrimSpace(command.Name), Latitude: command.Latitude, Longitude: command.Longitude,
 		Active: true, Version: 1, CreatedAt: now, UpdatedAt: now,
@@ -153,7 +153,7 @@ func (s *Service) RegisterStation(ctx context.Context, actor domain.Actor, comma
 		return domain.InspectionStation{}, err
 	}
 	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		source, err := s.store.FoodFacility(ctx, tx, actor.OrganizationID, station.SourceID)
+		source, err := s.store.FoodFacility(ctx, tx, actor.OrganizationID, station.FacilityID)
 		if err != nil {
 			return err
 		}
@@ -161,7 +161,7 @@ func (s *Service) RegisterStation(ctx context.Context, actor domain.Actor, comma
 		if err != nil {
 			return err
 		}
-		if zone.SourceID != source.ID {
+		if zone.FacilityID != source.ID {
 			return &domain.ConflictError{Resource: "production zone", Key: zone.ID, Cause: errors.New("zone belongs to a different food facility")}
 		}
 		if !source.Active || !zone.Active {
@@ -173,7 +173,7 @@ func (s *Service) RegisterStation(ctx context.Context, actor domain.Actor, comma
 		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: command.RequestID, Action: "monitoring_station.register", ObjectType: "monitoring_station",
-			ObjectID: station.ID, Outcome: "success", Metadata: fmt.Sprintf(`{"source_id":%q,"zone_id":%q}`, station.SourceID, station.ZoneID), OccurredAt: now,
+			ObjectID: station.ID, Outcome: "success", Metadata: fmt.Sprintf(`{"facility_id":%q,"zone_id":%q}`, station.FacilityID, station.ZoneID), OccurredAt: now,
 		})
 	})
 	if err != nil {

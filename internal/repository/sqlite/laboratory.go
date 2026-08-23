@@ -99,7 +99,7 @@ func (s *Store) CountOpenExceedances(ctx context.Context, db DBTX, organizationI
 	err := db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM incidents
-		WHERE organization_id = ? AND source_id = ?
+		WHERE organization_id = ? AND facility_id = ?
 		  AND originating_result_id IS NOT NULL
 		  AND status <> 'resolved'`, organizationID, sourceID).Scan(&count)
 	if err != nil {

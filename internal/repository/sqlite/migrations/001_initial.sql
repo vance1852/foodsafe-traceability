@@ -16,7 +16,7 @@ CREATE TABLE users (
     organization_id TEXT NOT NULL REFERENCES organizations(id),
     email TEXT NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK (role IN ('field_operator','lab_analyst','protection_supervisor')),
+    role TEXT NOT NULL CHECK (role IN ('field_operator','lab_analyst','safety_supervisor')),
     active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
     auth_generation INTEGER NOT NULL DEFAULT 1 CHECK (auth_generation > 0),
     failed_login_count INTEGER NOT NULL DEFAULT 0 CHECK (failed_login_count >= 0),
@@ -54,7 +54,7 @@ CREATE INDEX idx_sources_org_active ON food_facilities(organization_id, active);
 
 CREATE TABLE production_zones (
     id TEXT PRIMARY KEY,
-    source_id TEXT NOT NULL REFERENCES food_facilities(id),
+    facility_id TEXT NOT NULL REFERENCES food_facilities(id),
     organization_id TEXT NOT NULL REFERENCES organizations(id),
     name TEXT NOT NULL,
     level TEXT NOT NULL CHECK (level IN ('primary','secondary','buffer')),
@@ -63,14 +63,14 @@ CREATE TABLE production_zones (
     version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE (source_id, name),
+    UNIQUE (facility_id, name),
     UNIQUE (id, organization_id)
 );
-CREATE INDEX idx_zones_source_level ON production_zones(source_id, level, active);
+CREATE INDEX idx_zones_source_level ON production_zones(facility_id, level, active);
 
 CREATE TABLE inspection_stations (
     id TEXT PRIMARY KEY,
-    source_id TEXT NOT NULL REFERENCES food_facilities(id),
+    facility_id TEXT NOT NULL REFERENCES food_facilities(id),
     zone_id TEXT NOT NULL REFERENCES production_zones(id),
     organization_id TEXT NOT NULL REFERENCES organizations(id),
     code TEXT NOT NULL,
@@ -84,12 +84,12 @@ CREATE TABLE inspection_stations (
     UNIQUE (organization_id, code),
     UNIQUE (id, organization_id)
 );
-CREATE INDEX idx_stations_source_active ON inspection_stations(source_id, active);
+CREATE INDEX idx_stations_source_active ON inspection_stations(facility_id, active);
 
 CREATE TABLE sampling_plans (
     id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES organizations(id),
-    source_id TEXT NOT NULL REFERENCES food_facilities(id),
+    facility_id TEXT NOT NULL REFERENCES food_facilities(id),
     station_id TEXT NOT NULL REFERENCES inspection_stations(id),
     assigned_user_id TEXT NOT NULL REFERENCES users(id),
     window_start TEXT NOT NULL,
@@ -174,7 +174,7 @@ CREATE INDEX idx_lab_results_sample_status ON lab_results(sample_id, status);
 CREATE TABLE incidents (
     id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES organizations(id),
-    source_id TEXT NOT NULL REFERENCES food_facilities(id),
+    facility_id TEXT NOT NULL REFERENCES food_facilities(id),
     originating_result_id TEXT REFERENCES lab_results(id),
     title TEXT NOT NULL,
     description TEXT NOT NULL,
@@ -192,7 +192,7 @@ CREATE TABLE incidents (
     UNIQUE (originating_result_id),
     UNIQUE (id, organization_id)
 );
-CREATE INDEX idx_incidents_source_status ON incidents(source_id, status, severity);
+CREATE INDEX idx_incidents_source_status ON incidents(facility_id, status, severity);
 CREATE INDEX idx_incidents_lease ON incidents(status, lease_expires_at);
 
 CREATE TABLE containment_assignments (
@@ -249,7 +249,7 @@ CREATE INDEX idx_remediation_actions_plan_status ON remediation_actions(plan_id,
 CREATE TABLE permits (
     id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES organizations(id),
-    source_id TEXT NOT NULL REFERENCES food_facilities(id),
+    facility_id TEXT NOT NULL REFERENCES food_facilities(id),
     holder_name TEXT NOT NULL,
     reference TEXT NOT NULL,
     valid_from TEXT NOT NULL,
@@ -263,9 +263,9 @@ CREATE TABLE permits (
     UNIQUE (organization_id, reference),
     UNIQUE (id, organization_id)
 );
-CREATE INDEX idx_permits_source_status ON permits(source_id, status, valid_until);
+CREATE INDEX idx_permits_source_status ON permits(facility_id, status, valid_until);
 
-CREATE TABLE discharge_events (
+CREATE TABLE shipment_release_events (
     id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES organizations(id),
     permit_id TEXT NOT NULL REFERENCES permits(id),
@@ -276,7 +276,7 @@ CREATE TABLE discharge_events (
     created_at TEXT NOT NULL,
     UNIQUE (organization_id, permit_id, idempotency_key)
 );
-CREATE INDEX idx_discharge_permit_day ON discharge_events(permit_id, occurred_at);
+CREATE INDEX idx_shipment_release_permit_day ON shipment_release_events(permit_id, occurred_at);
 
 CREATE TABLE telemetry_readings (
     id TEXT PRIMARY KEY,

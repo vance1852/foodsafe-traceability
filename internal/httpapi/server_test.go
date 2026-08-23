@@ -43,7 +43,7 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateUser(context.Background(), domain.User{ID: "supervisor", OrganizationID: "org-1", Email: "supervisor@example.test", PasswordHash: hash, Role: domain.RoleProtectionSupervisor, Active: true, AuthGeneration: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if err := store.CreateUser(context.Background(), domain.User{ID: "supervisor", OrganizationID: "org-1", Email: "supervisor@example.test", PasswordHash: hash, Role: domain.RoleSafetySupervisor, Active: true, AuthGeneration: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	authService := auth.NewService(store, time.Hour)
@@ -105,16 +105,16 @@ func TestHealthAndReadiness(t *testing.T) {
 
 func TestProtectedRouteRequiresBearerSession(t *testing.T) {
 	fixture := newHTTPFixture(t)
-	missing := perform(fixture.handler, http.MethodGet, "/v1/sources", nil, "")
+	missing := perform(fixture.handler, http.MethodGet, "/v1/facilities", nil, "")
 	if missing.Code != http.StatusUnauthorized {
 		t.Fatalf("missing auth status=%d", missing.Code)
 	}
-	invalid := perform(fixture.handler, http.MethodGet, "/v1/sources", nil, "not-a-session")
+	invalid := perform(fixture.handler, http.MethodGet, "/v1/facilities", nil, "not-a-session")
 	if invalid.Code != http.StatusUnauthorized {
 		t.Fatalf("invalid auth status=%d", invalid.Code)
 	}
 	token := loginHTTP(t, fixture)
-	valid := perform(fixture.handler, http.MethodGet, "/v1/sources", nil, token)
+	valid := perform(fixture.handler, http.MethodGet, "/v1/facilities", nil, token)
 	if valid.Code != http.StatusOK {
 		t.Fatalf("valid auth status=%d body=%s", valid.Code, valid.Body.String())
 	}
@@ -123,7 +123,7 @@ func TestProtectedRouteRequiresBearerSession(t *testing.T) {
 func TestRegisterAndListFoodFacility(t *testing.T) {
 	fixture := newHTTPFixture(t)
 	token := loginHTTP(t, fixture)
-	created := perform(fixture.handler, http.MethodPost, "/v1/sources", map[string]any{"name": "HTTP Foods Plant", "kind": "processing_plant", "timezone": "UTC"}, token)
+	created := perform(fixture.handler, http.MethodPost, "/v1/facilities", map[string]any{"name": "HTTP Foods Plant", "kind": "processing_plant", "timezone": "UTC"}, token)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
 	}
@@ -134,7 +134,7 @@ func TestRegisterAndListFoodFacility(t *testing.T) {
 	if sourceResult.ID == "" || sourceResult.OrganizationID != "org-1" {
 		t.Fatalf("source = %#v", sourceResult)
 	}
-	listed := perform(fixture.handler, http.MethodGet, "/v1/sources?limit=10", nil, token)
+	listed := perform(fixture.handler, http.MethodGet, "/v1/facilities?limit=10", nil, token)
 	if listed.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", listed.Code, listed.Body.String())
 	}
@@ -146,7 +146,7 @@ func TestRegisterAndListFoodFacility(t *testing.T) {
 func TestUnknownJSONFieldIsRejected(t *testing.T) {
 	fixture := newHTTPFixture(t)
 	token := loginHTTP(t, fixture)
-	response := perform(fixture.handler, http.MethodPost, "/v1/sources", map[string]any{"name": "Bad Foods Plant", "kind": "processing_plant", "timezone": "UTC", "unknown": true}, token)
+	response := perform(fixture.handler, http.MethodPost, "/v1/facilities", map[string]any{"name": "Bad Foods Plant", "kind": "processing_plant", "timezone": "UTC", "unknown": true}, token)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -173,7 +173,7 @@ func TestLogoutRevokesHTTPToken(t *testing.T) {
 	if logout.Code != http.StatusNoContent {
 		t.Fatalf("logout status=%d body=%s", logout.Code, logout.Body.String())
 	}
-	after := perform(fixture.handler, http.MethodGet, "/v1/sources", nil, token)
+	after := perform(fixture.handler, http.MethodGet, "/v1/facilities", nil, token)
 	if after.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked token status=%d", after.Code)
 	}

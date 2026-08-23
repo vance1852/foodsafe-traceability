@@ -49,7 +49,7 @@ func (p *AlertProcessor) ProcessAlert(ctx context.Context, job domain.AlertJob) 
 			return nil
 		}
 		var sourceID string
-		if err := tx.QueryRowContext(ctx, `SELECT source_id FROM inspection_stations WHERE organization_id = ? AND id = ?`, reading.OrganizationID, reading.StationID).Scan(&sourceID); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT facility_id FROM inspection_stations WHERE organization_id = ? AND id = ?`, reading.OrganizationID, reading.StationID).Scan(&sourceID); err != nil {
 			return fmt.Errorf("load reading source: %w", err)
 		}
 		incidentID := uuid.NewString()
@@ -63,7 +63,7 @@ func (p *AlertProcessor) ProcessAlert(ctx context.Context, job domain.AlertJob) 
 		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO incidents(
-				id, organization_id, source_id, title, description, severity, status,
+				id, organization_id, facility_id, title, description, severity, status,
 				lease_generation, version, reported_at, created_at, updated_at
 			) VALUES (?, ?, ?, ?, ?, ?, 'reported', 0, 1, ?, ?, ?)`,
 			incidentID, reading.OrganizationID, sourceID,
