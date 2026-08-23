@@ -111,10 +111,30 @@ func (s *Service) Approve(ctx context.Context, actor domain.Actor, planID, reque
 		return domain.ErrForbidden
 	}
 	now := s.clock().UTC()
-	plan, err := s.store.CommitRemediationApproval(ctx, actor.OrganizationID, planID, actor.UserID, now)
-	if err == nil {
-		err = audit.Insert(ctx, s.store.DB(), domain.AuditEvent{ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID, RequestID: requestID, Action: "remediation_plan.approve", ObjectType: "remediation_plan", ObjectID: plan.ID, Outcome: "success", Metadata: "{}", OccurredAt: now})
-	}
+	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+		plan, err := s.store.RemediationPlan(ctx, tx, actor.OrganizationID, planID)
+		if err != nil {
+			return err
+		}
+		if err := plan.CanTransition(domain.RemediationApproved); err != nil {
+			return err
+		}
+		counts, err := s.store.CountActionsByStatus(ctx, tx, actor.OrganizationID, plan.ID)
+		if err != nil {
+			return err
+		}
+		if counts[domain.ActionPending] == 0 {
+			return &domain.ConflictError{Resource: "remediation plan", Key: plan.ID, Cause: errors.New("plan has no pending actions")}
+		}
+		if err := s.store.TransitionRemediationPlan(ctx, tx, plan, domain.RemediationApproved, actor.UserID, now); err != nil {
+			return err
+		}
+		return audit.Insert(ctx, tx, domain.AuditEvent{
+			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
+			RequestID: requestID, Action: "remediation_plan.approve", ObjectType: "remediation_plan", ObjectID: plan.ID,
+			Outcome: "success", Metadata: "{}", OccurredAt: now,
+		})
+	})
 	if err != nil {
 		return fmt.Errorf("approve remediation plan: %w", err)
 	}

@@ -536,6 +536,68 @@ func TestRemediationCreationRollsBackDuplicateActionKeys(t *testing.T) {
 	}
 }
 
+func TestRemediationApprovalAtomicOnAuditFailure(t *testing.T) {
+	f := newFixture(t)
+	graph := f.createSourceGraph(t)
+	reported, err := f.incidents.Report(context.Background(), f.field, incident.ReportCommand{FacilityID: graph.source.ID, Title: "Allergen containment audit failure", Description: "An undeclared allergen requires corrective action with audit outage", Severity: domain.SeveritySignificant, RequestID: "incident-audit-failure"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := f.remediation.CreatePlan(context.Background(), f.supervisor, remediation.CreatePlanCommand{IncidentID: reported.ID, Title: "Allergen containment plan", Objective: "Isolate affected lots and verify food quality after audit outage", BudgetCents: 500000, Actions: []remediation.CreateAction{{IdempotencyKey: "isolate-lots", Description: "Isolate impacted lots"}}, RequestID: "remediation-create-audit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the audit store being temporarily unavailable by dropping the audit table.
+	if _, err := f.store.DB().Exec(`DROP TABLE audit_events`); err != nil {
+		t.Fatalf("drop audit_events: %v", err)
+	}
+	approveErr := f.remediation.Approve(context.Background(), f.supervisor, plan.ID, "remediation-approve-audit")
+	if approveErr == nil {
+		t.Fatal("approve during audit outage should fail")
+	}
+
+	// Restore the audit store.
+	if _, err := f.store.DB().Exec(`CREATE TABLE audit_events (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations(id),
+    actor_user_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    occurred_at TEXT NOT NULL
+)`); err != nil {
+		t.Fatalf("restore audit_events: %v", err)
+	}
+
+	// The plan must still be in draft with no approval audit record left behind.
+	storedPlan, err := f.store.RemediationPlan(context.Background(), f.store.DB(), "org-1", plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedPlan.Status != domain.RemediationDraft {
+		t.Fatalf("plan status = %q, want draft", storedPlan.Status)
+	}
+	if storedPlan.ApprovedBy != "" {
+		t.Fatalf("plan approved_by = %q, want empty", storedPlan.ApprovedBy)
+	}
+
+	// After recovery, the same plan must approve successfully and leave a single success record.
+	if err := f.remediation.Approve(context.Background(), f.supervisor, plan.ID, "remediation-approve-retry"); err != nil {
+		t.Fatalf("approve after recovery: %v", err)
+	}
+	var approvals int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE object_type = 'remediation_plan' AND object_id = ? AND action = 'remediation_plan.approve'`, plan.ID).Scan(&approvals); err != nil {
+		t.Fatal(err)
+	}
+	if approvals != 1 {
+		t.Fatalf("audit approval count = %d, want 1", approvals)
+	}
+}
+
 func TestTelemetryIngestIsIdempotentAndCreatesSingleAlertJob(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)

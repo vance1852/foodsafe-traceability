@@ -88,22 +88,6 @@ func (s *Store) TransitionRemediationPlan(ctx context.Context, tx *sql.Tx, plan 
 	return nil
 }
 
-func (s *Store) CommitRemediationApproval(ctx context.Context, organizationID, planID, approver string, now time.Time) (domain.RemediationPlan, error) {
-	var plan domain.RemediationPlan
-	err := s.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		var err error
-		plan, err = s.RemediationPlan(ctx, tx, organizationID, planID)
-		if err != nil { return err }
-		if err := plan.CanTransition(domain.RemediationApproved); err != nil { return err }
-		counts, err := s.CountActionsByStatus(ctx, tx, organizationID, plan.ID)
-		if err != nil { return err }
-		if counts[domain.ActionPending] == 0 { return &domain.ConflictError{Resource:"remediation plan",Key:plan.ID,Cause:errors.New("plan has no pending actions")} }
-		return s.TransitionRemediationPlan(ctx, tx, plan, domain.RemediationApproved, approver, now)
-	})
-	if err != nil { return domain.RemediationPlan{}, fmt.Errorf("commit remediation approval: %w", err) }
-	return plan, nil
-}
-
 func InsertRemediationAction(ctx context.Context, db DBTX, action domain.RemediationAction) error {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO remediation_actions(
