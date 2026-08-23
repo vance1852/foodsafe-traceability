@@ -222,7 +222,6 @@ func (s *Service) Handoff(ctx context.Context, actor domain.Actor, command Hando
 		when = s.clock().UTC()
 	}
 	var updated domain.Sample
-	var handoffAudit domain.AuditEvent
 	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
 		sample, err := s.store.Sample(ctx, tx, actor.OrganizationID, command.SampleID)
 		if err != nil {
@@ -263,10 +262,12 @@ func (s *Service) Handoff(ctx context.Context, actor domain.Actor, command Hando
 		if err := repository.InsertCustodyEvent(ctx, tx, event); err != nil {
 			return err
 		}
-		handoffAudit = domain.AuditEvent{
+		if err := audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: command.RequestID, Action: "sample.handoff", ObjectType: "sample", ObjectID: sample.ID,
 			Outcome: "success", Metadata: fmt.Sprintf(`{"from":%q,"to":%q,"status":%q}`, sample.CustodianUserID, receiver.ID, next), OccurredAt: when,
+		}); err != nil {
+			return err
 		}
 		sample.Status = next
 		sample.CustodianUserID = receiver.ID
@@ -279,9 +280,6 @@ func (s *Service) Handoff(ctx context.Context, actor domain.Actor, command Hando
 	})
 	if err != nil {
 		return domain.Sample{}, fmt.Errorf("handoff sample: %w", err)
-	}
-	if err := audit.Insert(ctx, s.store.HandoffAuditDB(), handoffAudit); err != nil {
-		return domain.Sample{}, fmt.Errorf("handoff sample audit: %w", err)
 	}
 	return updated, nil
 }

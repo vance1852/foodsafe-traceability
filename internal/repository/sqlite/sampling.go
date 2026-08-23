@@ -254,8 +254,6 @@ func InsertCustodyEvent(ctx context.Context, db DBTX, event domain.CustodyEvent)
 	return nil
 }
 
-func (s *Store) HandoffAuditDB() *sql.DB { return s.db }
-
 func nullString(value string) any {
 	if value == "" {
 		return nil

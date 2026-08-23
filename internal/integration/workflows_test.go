@@ -626,6 +626,95 @@ func TestAuditFailureRollsBackSourceRegistration(t *testing.T) {
 	}
 }
 
+func TestHandoffAuditFailureLeavesSampleStateAndCustodyUnchangedAndRetrySucceeds(t *testing.T) {
+	f := newFixture(t)
+	graph := f.createSourceGraph(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	plan, err := f.sampling.CreatePlan(ctx, f.supervisor, sampling.CreatePlanCommand{
+		FacilityID: graph.source.ID, StationID: graph.station.ID, AssignedUserID: f.field.UserID,
+		WindowStart: now.Add(-time.Hour), WindowEnd: now.Add(time.Hour), RequiredBottles: 2, RequestID: "plan-handoff-audit",
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	if err := f.sampling.PublishPlan(ctx, f.supervisor, plan.ID, "publish-handoff-audit"); err != nil {
+		t.Fatalf("publish plan: %v", err)
+	}
+	sample, err := f.sampling.Collect(ctx, f.field, sampling.CollectCommand{PlanID: plan.ID, BottleCount: 2, CollectedAt: now, RequestID: "collect-handoff-audit"})
+	if err != nil {
+		t.Fatalf("collect sample: %v", err)
+	}
+
+	if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE audit_events`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.sampling.Handoff(ctx, f.field, sampling.HandoffCommand{SampleID: sample.ID, ToUserID: f.analyst.UserID, OccurredAt: now.Add(time.Minute), RequestID: "request-handoff-audit"})
+	if err == nil {
+		t.Fatal("handoff unexpectedly succeeded without audit table")
+	}
+
+	var status string
+	if err := f.store.DB().QueryRow(`SELECT status FROM samples WHERE id = ?`, sample.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(domain.SampleCollected) {
+		t.Fatalf("audit failure advanced sample status to %s", status)
+	}
+	var custodyCount int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM custody_events WHERE sample_id = ?`, sample.ID).Scan(&custodyCount); err != nil {
+		t.Fatal(err)
+	}
+	if custodyCount != 1 {
+		t.Fatalf("audit failure left %d custody events, want 1 (collection only)", custodyCount)
+	}
+
+	if _, err := f.store.DB().ExecContext(ctx, `
+		CREATE TABLE audit_events (
+			id TEXT PRIMARY KEY,
+			organization_id TEXT NOT NULL REFERENCES organizations(id),
+			actor_user_id TEXT NOT NULL,
+			request_id TEXT NOT NULL,
+			action TEXT NOT NULL,
+			object_type TEXT NOT NULL,
+			object_id TEXT NOT NULL,
+			outcome TEXT NOT NULL,
+			metadata TEXT NOT NULL DEFAULT '{}',
+			occurred_at TEXT NOT NULL
+		)`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_audit_object_time ON audit_events(organization_id, object_type, object_id, occurred_at)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_audit_request ON audit_events(request_id)`); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := f.sampling.Handoff(ctx, f.field, sampling.HandoffCommand{SampleID: sample.ID, ToUserID: f.analyst.UserID, OccurredAt: now.Add(2 * time.Minute), RequestID: "request-handoff-audit"})
+	if err != nil {
+		t.Fatalf("retry handoff after audit recovery: %v", err)
+	}
+	if updated.Status != domain.SampleInTransit || updated.CustodianUserID != f.analyst.UserID {
+		t.Fatalf("retry result = %#v", updated)
+	}
+	history, err := f.sampling.CustodyHistory(ctx, f.supervisor, sample.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("custody event count after retry = %d", len(history))
+	}
+	var auditCount int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action = 'sample.handoff' AND request_id = 'request-handoff-audit'`).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if auditCount != 1 {
+		t.Fatalf("handoff audit count = %d, want 1", auditCount)
+	}
+}
+
 func TestContextCancellationPreventsTransactionCommit(t *testing.T) {
 	f := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
