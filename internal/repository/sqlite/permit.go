@@ -90,7 +90,6 @@ func (s *Store) TransitionPermit(ctx context.Context, tx *sql.Tx, permit domain.
 	return nil
 }
 
-func (s *Store) ActivationAuditDB() *sql.DB { return s.db }
 
 func (s *Store) DailyShipmentReleaseVolume(ctx context.Context, db DBTX, permitID string, dayStart, dayEnd time.Time) (int64, error) {
 	var total int64

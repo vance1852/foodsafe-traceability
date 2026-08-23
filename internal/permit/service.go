@@ -85,7 +85,6 @@ func (s *Service) Activate(ctx context.Context, actor domain.Actor, permitID, re
 		return domain.ErrForbidden
 	}
 	now := s.clock().UTC()
-	var activationAudit domain.AuditEvent
 	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
 		permit, err := s.store.Permit(ctx, tx, actor.OrganizationID, permitID)
 		if err != nil {
@@ -104,17 +103,15 @@ func (s *Service) Activate(ctx context.Context, actor domain.Actor, permitID, re
 		if err := s.store.TransitionPermit(ctx, tx, permit, domain.PermitActive, now); err != nil {
 			return err
 		}
-		activationAudit = domain.AuditEvent{
+		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: requestID, Action: "permit.activate", ObjectType: "permit", ObjectID: permit.ID,
 			Outcome: "success", Metadata: "{}", OccurredAt: now,
-		}
-		return nil
+		})
 	})
 	if err != nil {
 		return fmt.Errorf("activate permit: %w", err)
 	}
-	if err := audit.Insert(ctx, s.store.ActivationAuditDB(), activationAudit); err != nil { return fmt.Errorf("activate permit audit: %w", err) }
 	return nil
 }
 
