@@ -626,6 +626,64 @@ func TestAuditFailureRollsBackSourceRegistration(t *testing.T) {
 	}
 }
 
+func TestAuditFailureRollsBackZoneRegistrationAndAllowsRetry(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	createdSource, err := f.sources.RegisterFoodFacility(ctx, f.supervisor, source.RegisterSourceCommand{Name: "Cold Storage Audit", Kind: domain.FacilityColdStorage, Timezone: "UTC", RequestID: "request-source-zone"})
+	if err != nil {
+		t.Fatalf("register source: %v", err)
+	}
+	zoneCommand := source.RegisterZoneCommand{FacilityID: createdSource.ID, Name: "Buffer Zone", Level: domain.ZoneBuffer, AreaSquareMeters: 1200, RequestID: "request-zone-rollback"}
+	if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE audit_events`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.sources.RegisterZone(ctx, f.supervisor, zoneCommand); err == nil {
+		t.Fatal("zone registration unexpectedly succeeded without audit table")
+	}
+	var leaked int
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM production_zones WHERE facility_id = ? AND name = 'Buffer Zone'`, createdSource.ID).Scan(&leaked); err != nil {
+		t.Fatal(err)
+	}
+	if leaked != 0 {
+		t.Fatalf("audit failure leaked %d production zones", leaked)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `
+CREATE TABLE audit_events (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations(id),
+    actor_user_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    occurred_at TEXT NOT NULL
+);
+CREATE INDEX idx_audit_object_time ON audit_events(organization_id, object_type, object_id, occurred_at);
+CREATE INDEX idx_audit_request ON audit_events(request_id);`); err != nil {
+		t.Fatalf("restore audit storage: %v", err)
+	}
+	zone, err := f.sources.RegisterZone(ctx, f.supervisor, zoneCommand)
+	if err != nil {
+		t.Fatalf("retry zone registration: %v", err)
+	}
+	var zones, audits int
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM production_zones WHERE facility_id = ? AND name = 'Buffer Zone'`, createdSource.ID).Scan(&zones); err != nil {
+		t.Fatal(err)
+	}
+	if zones != 1 {
+		t.Fatalf("production zone count after retry = %d", zones)
+	}
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events WHERE request_id = 'request-zone-rollback'`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if audits != 1 {
+		t.Fatalf("audit count after retry = %d", audits)
+	}
+	_ = zone
+}
+
 func TestContextCancellationPreventsTransactionCommit(t *testing.T) {
 	f := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())

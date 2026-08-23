@@ -136,12 +136,6 @@ func InsertProductionZone(ctx context.Context, db DBTX, zone domain.ProductionZo
 	return nil
 }
 
-func (s *Store) CommitProductionZone(ctx context.Context, zone domain.ProductionZone) error {
-	return s.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		return InsertProductionZone(ctx, tx, zone)
-	})
-}
-
 func (s *Store) ProductionZone(ctx context.Context, db DBTX, organizationID, zoneID string) (domain.ProductionZone, error) {
 	var zone domain.ProductionZone
 	var level, created, updated string

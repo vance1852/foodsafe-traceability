@@ -115,20 +115,23 @@ func (s *Service) RegisterZone(ctx context.Context, actor domain.Actor, command 
 	if err := zone.Validate(); err != nil {
 		return domain.ProductionZone{}, err
 	}
-	source, err := s.store.FoodFacility(ctx, s.store.DB(), actor.OrganizationID, command.FacilityID)
-	if err == nil && !source.Active {
-		err = &domain.ConflictError{Resource: "food facility", Key: source.ID, Cause: errors.New("inactive sources cannot receive zones")}
-	}
-	if err == nil {
-		err = s.store.CommitProductionZone(ctx, zone)
-	}
-	if err == nil {
-		err = audit.Insert(ctx, s.store.DB(), domain.AuditEvent{
+	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+		source, err := s.store.FoodFacility(ctx, tx, actor.OrganizationID, command.FacilityID)
+		if err != nil {
+			return err
+		}
+		if !source.Active {
+			return &domain.ConflictError{Resource: "food facility", Key: source.ID, Cause: errors.New("inactive sources cannot receive zones")}
+		}
+		if err := repository.InsertProductionZone(ctx, tx, zone); err != nil {
+			return err
+		}
+		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: command.RequestID, Action: "protection_zone.register", ObjectType: "protection_zone",
 			ObjectID: zone.ID, Outcome: "success", Metadata: fmt.Sprintf(`{"facility_id":%q,"level":%q}`, zone.FacilityID, zone.Level), OccurredAt: now,
 		})
-	}
+	})
 	if err != nil {
 		return domain.ProductionZone{}, fmt.Errorf("register production zone: %w", err)
 	}
