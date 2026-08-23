@@ -105,14 +105,41 @@ func (s *Service) Advance(ctx context.Context, actor domain.Actor, incidentID, l
 		return domain.ErrForbidden
 	}
 	now := s.clock().UTC()
-	incident, err := s.store.CommitIncidentAdvance(ctx, actor.OrganizationID, incidentID, actor.UserID, leaseToken, to, now)
-	if err == nil {
-		err = audit.Insert(ctx, s.store.DB(), domain.AuditEvent{
+	var incident domain.Incident
+	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+		transitioned, err := s.store.Incident(ctx, tx, actor.OrganizationID, incidentID)
+		if err != nil {
+			return err
+		}
+		if err := transitioned.CanTransition(to); err != nil {
+			return err
+		}
+		if to == domain.IncidentResolved {
+			incomplete, err := s.store.CountIncompleteAssignments(ctx, tx, actor.OrganizationID, incidentID)
+			if err != nil {
+				return err
+			}
+			if incomplete > 0 {
+				return &domain.ConflictError{Resource: "incident", Key: transitioned.ID, Cause: errors.New("containment assignments are incomplete")}
+			}
+			open, err := s.store.CountOpenRemediationActions(ctx, tx, actor.OrganizationID, incidentID)
+			if err != nil {
+				return err
+			}
+			if open > 0 {
+				return &domain.ConflictError{Resource: "incident", Key: transitioned.ID, Cause: errors.New("remediation actions are incomplete")}
+			}
+		}
+		if err := s.store.TransitionIncident(ctx, tx, transitioned, to, actor.UserID, leaseToken, now); err != nil {
+			return err
+		}
+		incident = transitioned
+		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: requestID, Action: "incident.advance", ObjectType: "incident", ObjectID: incident.ID,
 			Outcome: "success", Metadata: fmt.Sprintf(`{"from":%q,"to":%q}`, incident.Status, to), OccurredAt: now,
 		})
-	}
+	})
 	if err != nil {
 		return fmt.Errorf("advance incident: %w", err)
 	}

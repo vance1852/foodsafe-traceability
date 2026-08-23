@@ -167,41 +167,6 @@ func (s *Store) TransitionIncident(ctx context.Context, tx *sql.Tx, incident dom
 	return nil
 }
 
-func (s *Store) CommitIncidentAdvance(ctx context.Context, organizationID, incidentID, actorID, token string, to domain.IncidentStatus, now time.Time) (domain.Incident, error) {
-	var incident domain.Incident
-	err := s.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		var err error
-		incident, err = s.Incident(ctx, tx, organizationID, incidentID)
-		if err != nil {
-			return err
-		}
-		if err := incident.CanTransition(to); err != nil {
-			return err
-		}
-		if to == domain.IncidentResolved {
-			incomplete, err := s.CountIncompleteAssignments(ctx, tx, organizationID, incident.ID)
-			if err != nil {
-				return err
-			}
-			if incomplete > 0 {
-				return &domain.ConflictError{Resource: "incident", Key: incident.ID, Cause: errors.New("containment assignments are incomplete")}
-			}
-			open, err := s.CountOpenRemediationActions(ctx, tx, organizationID, incident.ID)
-			if err != nil {
-				return err
-			}
-			if open > 0 {
-				return &domain.ConflictError{Resource: "incident", Key: incident.ID, Cause: errors.New("remediation actions are incomplete")}
-			}
-		}
-		return s.TransitionIncident(ctx, tx, incident, to, actorID, token, now)
-	})
-	if err != nil {
-		return domain.Incident{}, fmt.Errorf("commit incident advance: %w", err)
-	}
-	return incident, nil
-}
-
 func InsertContainmentAssignment(ctx context.Context, db DBTX, assignment domain.ContainmentAssignment) error {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO containment_assignments(
