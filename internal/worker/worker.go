@@ -101,12 +101,15 @@ func (r *Runtime) processOne(ctx context.Context, owner string) error {
 		if err != nil {
 			return err
 		}
-		if err := r.store.AcknowledgeOutboxDelivery(ctx, event, time.Now().UTC()); err != nil {
-			return err
-		}
 		deliverErr := r.notifier.Deliver(ctx, event.Topic, event.IdempotencyKey, event.Payload)
 		if deliverErr != nil {
+			if failErr := r.store.FailOutboxEvent(ctx, event, deliverErr, time.Now().UTC()); failErr != nil {
+				return errors.Join(deliverErr, failErr)
+			}
 			return deliverErr
+		}
+		if err := r.store.AcknowledgeOutboxDelivery(ctx, event, time.Now().UTC()); err != nil {
+			return err
 		}
 		return nil
 	}
