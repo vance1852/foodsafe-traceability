@@ -648,6 +648,56 @@ func TestContextCancellationPreventsTransactionCommit(t *testing.T) {
 	}
 }
 
+func TestFoodFacilityRegistrationAbortsWhenCallerCancels(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := f.sources.RegisterFoodFacility(ctx, f.supervisor, source.RegisterSourceCommand{Name: "Cancelled Cold Storage", Kind: domain.FacilityColdStorage, Timezone: "UTC", RequestID: "request-cancelled-register"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("registration error = %v, want context.Canceled", err)
+	}
+	var facilities int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM food_facilities WHERE name = 'Cancelled Cold Storage'`).Scan(&facilities); err != nil {
+		t.Fatal(err)
+	}
+	if facilities != 0 {
+		t.Fatalf("cancelled caller left %d food facilities", facilities)
+	}
+	var audits int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE request_id = 'request-cancelled-register'`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if audits != 0 {
+		t.Fatalf("cancelled caller left %d audit events", audits)
+	}
+}
+
+func TestFoodFacilityRegistrationSucceedsWhenNetworkIsStable(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	created, err := f.sources.RegisterFoodFacility(ctx, f.supervisor, source.RegisterSourceCommand{Name: "Stable Cold Storage", Kind: domain.FacilityColdStorage, Timezone: "UTC", RequestID: "request-stable-register"})
+	if err != nil {
+		t.Fatalf("registration error = %v", err)
+	}
+	if created.ID == "" || created.Kind != domain.FacilityColdStorage {
+		t.Fatalf("created facility = %#v", created)
+	}
+	var facilities int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM food_facilities WHERE id = ?`, created.ID).Scan(&facilities); err != nil {
+		t.Fatal(err)
+	}
+	if facilities != 1 {
+		t.Fatalf("stable registration persisted %d food facilities", facilities)
+	}
+	var audits int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE request_id = 'request-stable-register'`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if audits != 1 {
+		t.Fatalf("stable registration recorded %d audit events", audits)
+	}
+}
+
 func TestTenantQueriesDoNotExposeOtherOrganization(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)

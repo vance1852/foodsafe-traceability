@@ -175,9 +175,26 @@ func (s *Store) WithTx(ctx context.Context, options *sql.TxOptions, fn func(*sql
 	return nil
 }
 
+// DetachedWriteContext returns a context that escapes the caller's cancellation
+// so a transaction can be rolled back deterministically rather than left to
+// complete after the caller has given up. It carries a stop channel fed by an
+// AfterFunc on the parent context: if the parent is cancelled mid-write, the
+// write context is cancelled too, which aborts the in-flight transaction.
 func DetachedWriteContext(parent context.Context) (context.Context, context.CancelFunc) {
-	base := context.WithoutCancel(parent)
-	return context.WithTimeout(base, 5*time.Second)
+	base, stop := context.WithCancel(context.Background())
+	if parent.Err() != nil {
+		stop()
+		return base, stop
+	}
+	stopAfterFunc := context.AfterFunc(parent, func() {
+		stop()
+	})
+	timeout, stopTimeout := context.WithTimeout(base, 5*time.Second)
+	return timeout, func() {
+		stopAfterFunc()
+		stopTimeout()
+		stop()
+	}
 }
 
 func formatTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }

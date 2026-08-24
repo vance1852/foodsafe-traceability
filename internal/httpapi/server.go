@@ -215,6 +215,8 @@ func classifyError(err error) (int, string, string) {
 		return http.StatusConflict, "conflict", "resource state conflicts with the operation"
 	case errors.Is(err, domain.ErrCapacityExceeded):
 		return http.StatusUnprocessableEntity, "capacity_exceeded", "business capacity would be exceeded"
+	case errors.Is(err, context.Canceled):
+		return 499, "client_closed", "client closed the request before completion"
 	case errors.Is(err, context.DeadlineExceeded):
 		return http.StatusGatewayTimeout, "deadline", "operation deadline exceeded"
 	default:
