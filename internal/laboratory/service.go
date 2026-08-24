@@ -113,14 +113,37 @@ func (s *Service) Review(ctx context.Context, actor domain.Actor, resultID strin
 	}
 	now := s.clock().UTC()
 	var incidentID string
-	result, sample, err := s.store.CommitLabReviewTransitions(ctx, actor.OrganizationID, resultID, actor.UserID, approve, now)
-	if err == nil {
+	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+		result, err := s.store.LabResult(ctx, tx, actor.OrganizationID, resultID)
+		if err != nil {
+			return err
+		}
 		to := domain.LabResultRejected
 		if approve {
 			to = domain.LabResultApproved
 		}
-		err = s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
-			if approve && result.ExceedsLimit() {
+		if err := result.CanTransition(to, actor.UserID); err != nil {
+			return err
+		}
+		if err := s.store.TransitionLabResult(ctx, tx, result, to, actor.UserID, now); err != nil {
+			return err
+		}
+		// The result transition, sample transition, exceedance incident, outbox
+		// alert and audit record must commit in one transaction. If the incident
+		// cannot be created, every preceding transition rolls back so the review
+		// stays in its submitted/received state and can be retried.
+		if approve {
+			sample, err := s.store.Sample(ctx, tx, actor.OrganizationID, result.SampleID)
+			if err != nil {
+				return err
+			}
+			if err := sample.CanTransition(domain.SampleTested); err != nil {
+				return err
+			}
+			if err := s.store.TransitionSample(ctx, tx, sample, domain.SampleTested, sample.CustodianUserID, now); err != nil {
+				return err
+			}
+			if result.ExceedsLimit() {
 				incidentID = uuid.NewString()
 				severity := domain.SeveritySignificant
 				if result.Value >= result.RegulatoryLimit*2 {
@@ -141,22 +164,21 @@ func (s *Service) Review(ctx context.Context, actor domain.Actor, resultID strin
 					return fmt.Errorf("create exceedance incident: %w", err)
 				}
 				payload, _ := json.Marshal(map[string]any{"incident_id": incidentID, "result_id": result.ID, "severity": severity})
-				outbox := domain.OutboxEvent{
+				if err := repository.InsertOutboxEvent(ctx, tx, domain.OutboxEvent{
 					ID: uuid.NewString(), OrganizationID: actor.OrganizationID, Topic: "incident.reported",
 					AggregateType: "incident", AggregateID: incidentID, IdempotencyKey: "lab-exceedance:" + result.ID,
 					Payload: payload, Status: domain.OutboxPending, MaxAttempts: 5, AvailableAt: now, CreatedAt: now, UpdatedAt: now,
-				}
-				if err := repository.InsertOutboxEvent(ctx, tx, outbox); err != nil {
+				}); err != nil {
 					return err
 				}
 			}
-			return audit.Insert(ctx, tx, domain.AuditEvent{
-				ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
-				RequestID: requestID, Action: "lab_result.review", ObjectType: "lab_result", ObjectID: result.ID,
-				Outcome: "success", Metadata: fmt.Sprintf(`{"decision":%q,"incident_id":%q}`, to, incidentID), OccurredAt: now,
-			})
+		}
+		return audit.Insert(ctx, tx, domain.AuditEvent{
+			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
+			RequestID: requestID, Action: "lab_result.review", ObjectType: "lab_result", ObjectID: result.ID,
+			Outcome: "success", Metadata: fmt.Sprintf(`{"decision":%q,"incident_id":%q}`, to, incidentID), OccurredAt: now,
 		})
-	}
+	})
 	if err != nil {
 		return "", fmt.Errorf("review laboratory result: %w", err)
 	}

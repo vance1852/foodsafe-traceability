@@ -94,43 +94,6 @@ func (s *Store) TransitionLabResult(ctx context.Context, tx *sql.Tx, result doma
 	return nil
 }
 
-func (s *Store) CommitLabReviewTransitions(ctx context.Context, organizationID, resultID, reviewerID string, approve bool, now time.Time) (domain.LabResult, domain.Sample, error) {
-	var result domain.LabResult
-	var sample domain.Sample
-	err := s.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		var err error
-		result, err = s.LabResult(ctx, tx, organizationID, resultID)
-		if err != nil {
-			return err
-		}
-		to := domain.LabResultRejected
-		if approve {
-			to = domain.LabResultApproved
-		}
-		if err := result.CanTransition(to, reviewerID); err != nil {
-			return err
-		}
-		if err := s.TransitionLabResult(ctx, tx, result, to, reviewerID, now); err != nil {
-			return err
-		}
-		if !approve {
-			return nil
-		}
-		sample, err = s.Sample(ctx, tx, organizationID, result.SampleID)
-		if err != nil {
-			return err
-		}
-		if err := sample.CanTransition(domain.SampleTested); err != nil {
-			return err
-		}
-		return s.TransitionSample(ctx, tx, sample, domain.SampleTested, sample.CustodianUserID, now)
-	})
-	if err != nil {
-		return domain.LabResult{}, domain.Sample{}, fmt.Errorf("commit laboratory review transitions: %w", err)
-	}
-	return result, sample, nil
-}
-
 func (s *Store) CountOpenExceedances(ctx context.Context, db DBTX, organizationID, sourceID string) (int, error) {
 	var count int
 	err := db.QueryRowContext(ctx, `

@@ -366,6 +366,106 @@ func TestLaboratorySelfReviewRollsBackAllState(t *testing.T) {
 	}
 }
 
+func TestLaboratoryExceedanceReviewStaysRetryableWhenIncidentCreationFails(t *testing.T) {
+	f := newFixture(t)
+	graph := f.createSourceGraph(t)
+	sample := f.createReceivedSample(t, graph)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	result, err := f.lab.RecordResult(ctx, f.analyst, laboratory.RecordResultCommand{
+		SampleID: sample.ID, Parameter: "lead", Value: .05, Unit: "mg/L", MethodCode: "HJ-637",
+		DetectionLimit: .001, RegulatoryLimit: .01, MeasuredAt: now, RequestID: "lead-record",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.lab.Submit(ctx, f.analyst, result.ID, "lead-submit"); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the incident dependency failing mid-review by dropping the
+	// incidents table. The approval must roll back the result and sample so the
+	// review stays in a retryable submitted/received state.
+	if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE incidents`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.lab.Review(ctx, f.supervisor, result.ID, true, "lead-review-failed")
+	if err == nil {
+		t.Fatal("review unexpectedly succeeded without incidents table")
+	}
+	var resultStatus, sampleStatus string
+	if err := f.store.DB().QueryRow(`SELECT status FROM lab_results WHERE id = ?`, result.ID).Scan(&resultStatus); err != nil {
+		t.Fatal(err)
+	}
+	if resultStatus != "submitted" {
+		t.Fatalf("result status after failed review = %s, want submitted", resultStatus)
+	}
+	if err := f.store.DB().QueryRow(`SELECT status FROM samples WHERE id = ?`, sample.ID).Scan(&sampleStatus); err != nil {
+		t.Fatal(err)
+	}
+	if sampleStatus != "received" {
+		t.Fatalf("sample status after failed review = %s, want received", sampleStatus)
+	}
+
+	// Recover the dependency. Re-running the approval once must produce the
+	// incident, outbox alert and audit in a single atomic step.
+	if _, err := f.store.DB().ExecContext(ctx, `
+CREATE TABLE incidents (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations(id),
+    facility_id TEXT NOT NULL REFERENCES food_facilities(id),
+    originating_result_id TEXT REFERENCES lab_results(id),
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    severity TEXT NOT NULL CHECK (severity IN ('advisory','significant','critical')),
+    status TEXT NOT NULL CHECK (status IN ('reported','assessing','contained','remediating','resolved')),
+    commander_user_id TEXT REFERENCES users(id),
+    lease_token TEXT,
+    lease_generation INTEGER NOT NULL DEFAULT 0,
+    lease_expires_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    reported_at TEXT NOT NULL,
+    resolved_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (originating_result_id),
+    UNIQUE (id, organization_id)
+)`); err != nil {
+		t.Fatalf("restore incidents table: %v", err)
+	}
+	incidentID, err := f.lab.Review(ctx, f.supervisor, result.ID, true, "lead-review-retry")
+	if err != nil {
+		t.Fatalf("retry review: %v", err)
+	}
+	if incidentID == "" {
+		t.Fatal("retry review did not create exceedance incident")
+	}
+	var incidentCount, outboxCount, auditCount int
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM incidents WHERE id = ? AND originating_result_id = ?`, incidentID, result.ID).Scan(&incidentCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = ?`, incidentID).Scan(&outboxCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE request_id = 'lead-review-retry'`).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if incidentCount != 1 || outboxCount != 1 || auditCount != 1 {
+		t.Fatalf("retry left incident=%d outbox=%d audit=%d", incidentCount, outboxCount, auditCount)
+	}
+	if err := f.store.DB().QueryRow(`SELECT status FROM lab_results WHERE id = ?`, result.ID).Scan(&resultStatus); err != nil {
+		t.Fatal(err)
+	}
+	if resultStatus != "approved" {
+		t.Fatalf("result status after retry = %s, want approved", resultStatus)
+	}
+	if err := f.store.DB().QueryRow(`SELECT status FROM samples WHERE id = ?`, sample.ID).Scan(&sampleStatus); err != nil {
+		t.Fatal(err)
+	}
+	if sampleStatus != "tested" {
+		t.Fatalf("sample status after retry = %s, want tested", sampleStatus)
+	}
+}
+
 func TestPermitActivationAndShipmentReleaseIdempotency(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)
