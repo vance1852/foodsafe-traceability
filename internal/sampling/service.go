@@ -80,13 +80,15 @@ func (s *Service) CreatePlan(ctx context.Context, actor domain.Actor, command Cr
 		}
 	}
 	if err == nil {
-		err = s.store.CommitSamplingPlan(ctx, plan)
-	}
-	if err == nil {
-		err = audit.Insert(ctx, s.store.DB(), domain.AuditEvent{
-			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
-			RequestID: command.RequestID, Action: "sampling_plan.create", ObjectType: "sampling_plan",
-			ObjectID: plan.ID, Outcome: "success", Metadata: fmt.Sprintf(`{"station_id":%q,"assignee_id":%q}`, plan.StationID, plan.AssignedUserID), OccurredAt: now,
+		err = s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+			if err := repository.InsertSamplingPlan(ctx, tx, plan); err != nil {
+				return err
+			}
+			return audit.Insert(ctx, tx, domain.AuditEvent{
+				ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
+				RequestID: command.RequestID, Action: "sampling_plan.create", ObjectType: "sampling_plan",
+				ObjectID: plan.ID, Outcome: "success", Metadata: fmt.Sprintf(`{"station_id":%q,"assignee_id":%q}`, plan.StationID, plan.AssignedUserID), OccurredAt: now,
+			})
 		})
 	}
 	if err != nil {

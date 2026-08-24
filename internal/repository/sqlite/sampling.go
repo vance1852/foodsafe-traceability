@@ -26,10 +26,6 @@ func InsertSamplingPlan(ctx context.Context, db DBTX, plan domain.SamplingPlan) 
 	return nil
 }
 
-func (s *Store) CommitSamplingPlan(ctx context.Context, plan domain.SamplingPlan) error {
-	return s.WithTx(ctx, nil, func(tx *sql.Tx) error { return InsertSamplingPlan(ctx, tx, plan) })
-}
-
 func scanSamplingPlan(scanner interface{ Scan(...any) error }) (domain.SamplingPlan, error) {
 	var plan domain.SamplingPlan
 	var windowStart, windowEnd, status, created, updated string

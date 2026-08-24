@@ -626,6 +626,49 @@ func TestAuditFailureRollsBackSourceRegistration(t *testing.T) {
 	}
 }
 
+func TestSamplingCreatePlanAuditFailureLeavesNoPlanAndAllowsRecreate(t *testing.T) {
+	f := newFixture(t)
+	graph := f.createSourceGraph(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	windowStart := now.Add(2 * time.Hour)
+	windowEnd := now.Add(3 * time.Hour)
+	if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE audit_events`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.sampling.CreatePlan(ctx, f.supervisor, sampling.CreatePlanCommand{
+		FacilityID: graph.source.ID, StationID: graph.station.ID, AssignedUserID: f.field.UserID,
+		WindowStart: windowStart, WindowEnd: windowEnd, RequiredBottles: 2, RequestID: "plan-audit-fail",
+	})
+	if err == nil {
+		t.Fatal("plan creation unexpectedly succeeded without audit table")
+	}
+	var leaked int
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sampling_plans WHERE station_id = ?`, graph.station.ID).Scan(&leaked); err != nil {
+		t.Fatal(err)
+	}
+	if leaked != 0 {
+		t.Fatalf("audit failure leaked %d plans", leaked)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE TABLE audit_events (id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, actor_user_id TEXT NOT NULL, request_id TEXT NOT NULL, action TEXT NOT NULL, object_type TEXT NOT NULL, object_id TEXT NOT NULL, outcome TEXT NOT NULL, metadata TEXT NOT NULL DEFAULT '{}', occurred_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	recreated, err := f.sampling.CreatePlan(ctx, f.supervisor, sampling.CreatePlanCommand{
+		FacilityID: graph.source.ID, StationID: graph.station.ID, AssignedUserID: f.field.UserID,
+		WindowStart: windowStart, WindowEnd: windowEnd, RequiredBottles: 2, RequestID: "plan-audit-retry",
+	})
+	if err != nil {
+		t.Fatalf("recreate plan in same window after audit recovered: %v", err)
+	}
+	var plans int
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sampling_plans WHERE station_id = ? AND window_start = ? AND window_end = ?`, graph.station.ID, recreated.WindowStart.Format(time.RFC3339Nano), recreated.WindowEnd.Format(time.RFC3339Nano)).Scan(&plans); err != nil {
+		t.Fatal(err)
+	}
+	if plans != 1 {
+		t.Fatalf("plans in window = %d, want 1", plans)
+	}
+}
+
 func TestContextCancellationPreventsTransactionCommit(t *testing.T) {
 	f := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
