@@ -366,6 +366,74 @@ func TestLaboratorySelfReviewRollsBackAllState(t *testing.T) {
 	}
 }
 
+func TestLaboratorySubmitRollsBackOnAuditFailureAndCanResubmit(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	graph := f.createSourceGraph(t)
+	sample := f.createReceivedSample(t, graph)
+	result, err := f.lab.RecordResult(ctx, f.analyst, laboratory.RecordResultCommand{
+		SampleID: sample.ID, Parameter: "chlorine", Value: 0.4, Unit: "mg/L", MethodCode: "HJ-586",
+		DetectionLimit: .01, RegulatoryLimit: 1, MeasuredAt: time.Now(), RequestID: "lab-record-audit-rollback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE audit_events`); err != nil {
+		t.Fatal(err)
+	}
+	submitErr := f.lab.Submit(ctx, f.analyst, result.ID, "lab-submit-audit-rollback")
+	if submitErr == nil {
+		t.Fatal("submit unexpectedly succeeded without audit table")
+	}
+
+	var status string
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT status FROM lab_results WHERE id = ?`, result.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "draft" {
+		t.Fatalf("audit failure advanced result status to %s, want draft", status)
+	}
+
+	if _, err := f.store.DB().ExecContext(ctx, `
+CREATE TABLE audit_events (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations(id),
+    actor_user_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    occurred_at TEXT NOT NULL
+)`); err != nil {
+		t.Fatalf("recreate audit table: %v", err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE INDEX idx_audit_object_time ON audit_events(organization_id, object_type, object_id, occurred_at)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE INDEX idx_audit_request ON audit_events(request_id)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.lab.Submit(ctx, f.analyst, result.ID, "lab-submit-audit-resubmit"); err != nil {
+		t.Fatalf("resubmit after recovery: %v", err)
+	}
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT status FROM lab_results WHERE id = ?`, result.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "submitted" {
+		t.Fatalf("resubmitted result status = %s, want submitted", status)
+	}
+	var audits int
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events WHERE request_id = 'lab-submit-audit-resubmit'`).Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if audits != 1 {
+		t.Fatalf("resubmit audit count = %d, want 1", audits)
+	}
+}
+
 func TestPermitActivationAndShipmentReleaseIdempotency(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)

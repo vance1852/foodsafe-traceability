@@ -81,18 +81,26 @@ func (s *Service) Submit(ctx context.Context, actor domain.Actor, resultID, requ
 		return domain.ErrForbidden
 	}
 	now := s.clock().UTC()
-	err := s.store.CommitLabSubmission(ctx, actor.OrganizationID, resultID, actor.UserID, actor.CanSupervise(), now)
-	if err == nil {
-		var result domain.LabResult
-		result, err = s.store.LabResult(ctx, s.store.DB(), actor.OrganizationID, resultID)
-		if err == nil {
-			err = audit.Insert(ctx, s.store.DB(), domain.AuditEvent{
-				ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
-				RequestID: requestID, Action: "lab_result.submit", ObjectType: "lab_result", ObjectID: result.ID,
-				Outcome: "success", Metadata: "{}", OccurredAt: now,
-			})
+	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+		result, err := s.store.LabResult(ctx, tx, actor.OrganizationID, resultID)
+		if err != nil {
+			return err
 		}
-	}
+		if result.AnalystUserID != actor.UserID && !actor.CanSupervise() {
+			return domain.ErrForbidden
+		}
+		if err := result.CanTransition(domain.LabResultSubmitted, ""); err != nil {
+			return err
+		}
+		if err := s.store.TransitionLabResult(ctx, tx, result, domain.LabResultSubmitted, "", now); err != nil {
+			return err
+		}
+		return audit.Insert(ctx, tx, domain.AuditEvent{
+			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
+			RequestID: requestID, Action: "lab_result.submit", ObjectType: "lab_result", ObjectID: result.ID,
+			Outcome: "success", Metadata: "{}", OccurredAt: now,
+		})
+	})
 	if err != nil {
 		return fmt.Errorf("submit laboratory result: %w", err)
 	}
