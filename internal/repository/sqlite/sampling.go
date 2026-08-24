@@ -254,18 +254,6 @@ func InsertCustodyEvent(ctx context.Context, db DBTX, event domain.CustodyEvent)
 	return nil
 }
 
-func (s *Store) CommitCustodyHandoff(ctx context.Context, sample domain.Sample, next domain.SampleStatus, receiverID string, occurredAt time.Time, event domain.CustodyEvent) error {
-	return s.WithTx(ctx, nil, func(tx *sql.Tx) error {
-		if err := s.TransitionSample(ctx, tx, sample, next, receiverID, occurredAt); err != nil {
-			return err
-		}
-		if err := InsertCustodyEvent(ctx, tx, event); err != nil {
-			return err
-		}
-		return nil
-	})
-}
-
 func nullString(value string) any {
 	if value == "" {
 		return nil

@@ -221,56 +221,71 @@ func (s *Service) Handoff(ctx context.Context, actor domain.Actor, command Hando
 	if command.OccurredAt.IsZero() {
 		when = s.clock().UTC()
 	}
-	sample, err := s.store.Sample(ctx, s.store.DB(), actor.OrganizationID, command.SampleID)
+	var result domain.Sample
+	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
+		sample, err := s.store.Sample(ctx, tx, actor.OrganizationID, command.SampleID)
+		if err != nil {
+			return err
+		}
+		if sample.CustodianUserID != actor.UserID && !actor.CanSupervise() {
+			return domain.ErrForbidden
+		}
+		receiver, err := s.store.UserByID(ctx, tx, actor.OrganizationID, command.ToUserID)
+		if err != nil {
+			return err
+		}
+		if !receiver.Active {
+			return &domain.ConflictError{Resource: "custody receiver", Key: receiver.ID, Cause: errors.New("receiver is inactive")}
+		}
+		var next domain.SampleStatus
+		switch sample.Status {
+		case domain.SampleCollected:
+			next = domain.SampleInTransit
+		case domain.SampleInTransit:
+			next = domain.SampleReceived
+		default:
+			return &domain.TransitionError{Entity: "sample", From: string(sample.Status), To: "handoff", Reason: "sample is not in a handoff state"}
+		}
+		if err := sample.CanTransition(next); err != nil {
+			return err
+		}
+		event := domain.CustodyEvent{
+			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, SampleID: sample.ID,
+			FromUserID: sample.CustodianUserID, ToUserID: receiver.ID, Action: string(next), OccurredAt: when, RequestID: command.RequestID,
+		}
+		if err := event.Validate(); err != nil {
+			return err
+		}
+		// The custody transition, the custody event and the audit trail commit in the
+		// same transaction. A failure to persist the audit record rolls the handoff back
+		// so the sample state, custodian and custody history stay unchanged and the
+		// operation can be retried once the audit store recovers.
+		if err := s.store.TransitionSample(ctx, tx, sample, next, receiver.ID, when); err != nil {
+			return err
+		}
+		if err := repository.InsertCustodyEvent(ctx, tx, event); err != nil {
+			return err
+		}
+		if err := audit.Insert(ctx, tx, domain.AuditEvent{
+			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
+			RequestID: command.RequestID, Action: "sample.handoff", ObjectType: "sample", ObjectID: sample.ID,
+			Outcome: "success", Metadata: fmt.Sprintf(`{"from":%q,"to":%q,"status":%q}`, sample.CustodianUserID, receiver.ID, next), OccurredAt: when,
+		}); err != nil {
+			return err
+		}
+		sample.Status = next
+		sample.CustodianUserID = receiver.ID
+		sample.Version++
+		if next == domain.SampleReceived {
+			sample.ReceivedAt = &when
+		}
+		result = sample
+		return nil
+	})
 	if err != nil {
 		return domain.Sample{}, fmt.Errorf("handoff sample: %w", err)
 	}
-	if sample.CustodianUserID != actor.UserID && !actor.CanSupervise() {
-		return domain.Sample{}, domain.ErrForbidden
-	}
-	receiver, err := s.store.UserByID(ctx, s.store.DB(), actor.OrganizationID, command.ToUserID)
-	if err != nil {
-		return domain.Sample{}, fmt.Errorf("handoff sample: %w", err)
-	}
-	if !receiver.Active {
-		return domain.Sample{}, &domain.ConflictError{Resource: "custody receiver", Key: receiver.ID, Cause: errors.New("receiver is inactive")}
-	}
-	var next domain.SampleStatus
-	switch sample.Status {
-	case domain.SampleCollected:
-		next = domain.SampleInTransit
-	case domain.SampleInTransit:
-		next = domain.SampleReceived
-	default:
-		return domain.Sample{}, &domain.TransitionError{Entity: "sample", From: string(sample.Status), To: "handoff", Reason: "sample is not in a handoff state"}
-	}
-	if err := sample.CanTransition(next); err != nil {
-		return domain.Sample{}, err
-	}
-	event := domain.CustodyEvent{
-		ID: uuid.NewString(), OrganizationID: actor.OrganizationID, SampleID: sample.ID,
-		FromUserID: sample.CustodianUserID, ToUserID: receiver.ID, Action: string(next), OccurredAt: when, RequestID: command.RequestID,
-	}
-	if err := event.Validate(); err != nil {
-		return domain.Sample{}, err
-	}
-	if err := s.store.CommitCustodyHandoff(ctx, sample, next, receiver.ID, when, event); err != nil {
-		return domain.Sample{}, fmt.Errorf("handoff sample: %w", err)
-	}
-	if err := audit.Insert(ctx, s.store.DB(), domain.AuditEvent{
-		ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
-		RequestID: command.RequestID, Action: "sample.handoff", ObjectType: "sample", ObjectID: sample.ID,
-		Outcome: "success", Metadata: fmt.Sprintf(`{"from":%q,"to":%q,"status":%q}`, sample.CustodianUserID, receiver.ID, next), OccurredAt: when,
-	}); err != nil {
-		return domain.Sample{}, fmt.Errorf("handoff sample: %w", err)
-	}
-	sample.Status = next
-	sample.CustodianUserID = receiver.ID
-	sample.Version++
-	if next == domain.SampleReceived {
-		sample.ReceivedAt = &when
-	}
-	return sample, nil
+	return result, nil
 }
 
 func (s *Service) CustodyHistory(ctx context.Context, actor domain.Actor, sampleID string) ([]domain.CustodyEvent, error) {

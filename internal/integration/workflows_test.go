@@ -698,6 +698,88 @@ func TestDatabaseQueriesReturnWrappedNotFoundErrors(t *testing.T) {
 	}
 }
 
+func TestHandoffRollsBackWhenAuditStoreIsUnavailable(t *testing.T) {
+	f := newFixture(t)
+	graph := f.createSourceGraph(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	plan, err := f.sampling.CreatePlan(ctx, f.supervisor, sampling.CreatePlanCommand{
+		FacilityID: graph.source.ID, StationID: graph.station.ID, AssignedUserID: f.field.UserID,
+		WindowStart: now.Add(-time.Hour), WindowEnd: now.Add(time.Hour), RequiredBottles: 2, RequestID: "plan-audit-fail",
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	if err := f.sampling.PublishPlan(ctx, f.supervisor, plan.ID, "publish-audit-fail"); err != nil {
+		t.Fatalf("publish plan: %v", err)
+	}
+	sample, err := f.sampling.Collect(ctx, f.field, sampling.CollectCommand{PlanID: plan.ID, BottleCount: 2, CollectedAt: now, RequestID: "collect-audit-fail"})
+	if err != nil {
+		t.Fatalf("collect sample: %v", err)
+	}
+	originalVersion := sample.Version
+
+	if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE audit_events`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.sampling.Handoff(ctx, f.field, sampling.HandoffCommand{SampleID: sample.ID, ToUserID: f.supervisor.UserID, OccurredAt: now.Add(time.Minute), RequestID: "handoff-audit-fail"})
+	if err == nil {
+		t.Fatal("handoff unexpectedly succeeded without audit table")
+	}
+
+	var status, custodian string
+	var version int64
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT status, custodian_user_id, version FROM samples WHERE id = ?`, sample.ID).Scan(&status, &custodian, &version); err != nil {
+		t.Fatal(err)
+	}
+	if domain.SampleStatus(status) != domain.SampleCollected {
+		t.Fatalf("sample status = %s, want collected", status)
+	}
+	if custodian != f.field.UserID {
+		t.Fatalf("custodian = %s, want field", custodian)
+	}
+	if version != originalVersion {
+		t.Fatalf("sample version = %d, want %d", version, originalVersion)
+	}
+	var custodyCount int
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM custody_events WHERE sample_id = ?`, sample.ID).Scan(&custodyCount); err != nil {
+		t.Fatal(err)
+	}
+	if custodyCount != 1 {
+		t.Fatalf("custody event count = %d, want 1 (only the original collection)", custodyCount)
+	}
+
+	if _, err := f.store.DB().ExecContext(ctx, `
+		CREATE TABLE audit_events (
+			id TEXT PRIMARY KEY,
+			organization_id TEXT NOT NULL REFERENCES organizations(id),
+			actor_user_id TEXT NOT NULL,
+			request_id TEXT NOT NULL,
+			action TEXT NOT NULL,
+			object_type TEXT NOT NULL,
+			object_id TEXT NOT NULL,
+			outcome TEXT NOT NULL,
+			metadata TEXT NOT NULL DEFAULT '{}',
+			occurred_at TEXT NOT NULL
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE INDEX idx_audit_object_time ON audit_events(organization_id, object_type, object_id, occurred_at)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE INDEX idx_audit_request ON audit_events(request_id)`); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := f.sampling.Handoff(ctx, f.field, sampling.HandoffCommand{SampleID: sample.ID, ToUserID: f.supervisor.UserID, OccurredAt: now.Add(2 * time.Minute), RequestID: "handoff-retry"})
+	if err != nil {
+		t.Fatalf("retry handoff after recovery: %v", err)
+	}
+	if recovered.Status != domain.SampleInTransit || recovered.CustodianUserID != f.supervisor.UserID {
+		t.Fatalf("recovered sample = %#v", recovered)
+	}
+}
+
 func Example_endToEndProtectionFlow() {
 	fmt.Println("register source -> schedule sample -> preserve custody -> approve result -> respond to incident")
 	// Output: register source -> schedule sample -> preserve custody -> approve result -> respond to incident
