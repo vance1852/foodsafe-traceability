@@ -400,6 +400,68 @@ func TestPermitActivationAndShipmentReleaseIdempotency(t *testing.T) {
 	}
 }
 
+func TestShipmentReleaseAuditFailureRollsBackAndRetries(t *testing.T) {
+	f := newFixture(t)
+	graph := f.createSourceGraph(t)
+	now := time.Now().UTC()
+	created, err := f.permits.Create(context.Background(), f.supervisor, permit.CreateCommand{FacilityID: graph.source.ID, HolderName: "Municipal Treatment Plant", Reference: "PERMIT-2026-AUDIT", ValidFrom: now.Add(-time.Hour), ValidUntil: now.Add(24 * time.Hour), DailyVolumeLimitLiters: 1000, RequestID: "permit-create-audit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.permits.Activate(context.Background(), f.supervisor, created.ID, "permit-activate-audit"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	command := permit.ReportShipmentReleaseCommand{PermitID: created.ID, IdempotencyKey: "shipment-audit-key", VolumeLiters: 400, OccurredAt: now, RequestID: "shipment-audit-1"}
+
+	if _, err := f.store.DB().ExecContext(ctx, `DROP TABLE audit_events`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.permits.ReportShipmentRelease(ctx, f.field, command); err == nil {
+		t.Fatal("shipment release unexpectedly succeeded without audit table")
+	}
+	var leaked int
+	if err := f.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM shipment_release_events WHERE permit_id = ?`, created.ID).Scan(&leaked); err != nil {
+		t.Fatal(err)
+	}
+	if leaked != 0 {
+		t.Fatalf("audit failure leaked %d shipment release events", leaked)
+	}
+
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE TABLE audit_events (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organizations(id),
+    actor_user_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    occurred_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE INDEX idx_audit_object_time ON audit_events(organization_id, object_type, object_id, occurred_at)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DB().ExecContext(ctx, `CREATE INDEX idx_audit_request ON audit_events(request_id)`); err != nil {
+		t.Fatal(err)
+	}
+
+	first, inserted, err := f.permits.ReportShipmentRelease(ctx, f.field, command)
+	if err != nil || !inserted {
+		t.Fatalf("retry after audit recovery inserted=%v err=%v", inserted, err)
+	}
+	second, inserted, err := f.permits.ReportShipmentRelease(ctx, f.field, command)
+	if err != nil || inserted {
+		t.Fatalf("repeat after recovery inserted=%v err=%v", inserted, err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("idempotent retry returned different ids: %s %s", first.ID, second.ID)
+	}
+}
+
 func TestPermitActivationBlockedByOpenExceedance(t *testing.T) {
 	f := newFixture(t)
 	graph := f.createSourceGraph(t)

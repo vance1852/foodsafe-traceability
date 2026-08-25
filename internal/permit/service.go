@@ -168,7 +168,6 @@ func (s *Service) ReportShipmentRelease(ctx context.Context, actor domain.Actor,
 		return domain.ShipmentReleaseEvent{}, false, err
 	}
 	created := false
-	var releaseAudit domain.AuditEvent
 	err := s.store.WithTx(ctx, nil, func(tx *sql.Tx) error {
 		permit, err := s.store.Permit(ctx, tx, actor.OrganizationID, command.PermitID)
 		if err != nil {
@@ -200,16 +199,14 @@ func (s *Service) ReportShipmentRelease(ctx context.Context, actor domain.Actor,
 		if total+event.VolumeLiters > permit.DailyVolumeLimitLiters {
 			return domain.ErrCapacityExceeded
 		}
-		releaseAudit = domain.AuditEvent{
+		return audit.Insert(ctx, tx, domain.AuditEvent{
 			ID: uuid.NewString(), OrganizationID: actor.OrganizationID, ActorUserID: actor.UserID,
 			RequestID: command.RequestID, Action: "shipment release.report", ObjectType: "shipment release_event", ObjectID: event.ID,
 			Outcome: "success", Metadata: fmt.Sprintf(`{"permit_id":%q,"volume_liters":%d}`, permit.ID, event.VolumeLiters), OccurredAt: event.CreatedAt,
-		}
-		return nil
+		})
 	})
 	if err != nil {
 		return domain.ShipmentReleaseEvent{}, false, fmt.Errorf("report shipment release: %w", err)
 	}
-	if created { if err := audit.Insert(ctx, s.store.ReleaseAuditDB(), releaseAudit); err != nil { return domain.ShipmentReleaseEvent{}, false, fmt.Errorf("report shipment release audit: %w", err) } }
 	return event, created, nil
 }
